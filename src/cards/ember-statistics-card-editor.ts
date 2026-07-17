@@ -14,7 +14,8 @@ const LABELS: Record<string, string> = {
   days: "Days back",
   color: "Colour",
   stats: "Footer stats",
-  reference: "Reference (today / yesterday)",
+  align: "Week/month framing",
+  periods: "Period chips",
   show_period_selector: "Show period selector",
 };
 
@@ -124,15 +125,27 @@ export class EmberStatisticsCardEditor extends LitElement {
         type: "grid",
         schema: [
           {
-            name: "reference",
+            name: "align",
             selector: sel([
-              { value: "today", label: "Today" },
-              { value: "yesterday", label: "Yesterday" },
+              { value: "calendar", label: "Calendar (Mon / 1st)" },
+              { value: "rolling", label: "Rolling (last N days)" },
             ]),
           },
-          { name: "show_period_selector", selector: { boolean: {} } },
+          {
+            name: "periods",
+            selector: sel(
+              [
+                { value: "day", label: "Day" },
+                { value: "week", label: "Week" },
+                { value: "month", label: "Month" },
+                { value: "year", label: "Year" },
+              ],
+              true
+            ),
+          },
         ],
       },
+      { name: "show_period_selector", selector: { boolean: {} } },
     ];
   }
 

@@ -22,8 +22,8 @@ export interface EmberStatisticsCardConfig extends LovelaceCardConfig {
   color?: string; // "amber" | "teal" | "green" | hex; default "amber"
   stats?: StatKey[]; // footer chips
   show_period_selector?: boolean; // default true
-  reference?: "today" | "yesterday"; // window end; default "today". Yesterday
-  // shifts the whole window back a day (for providers whose "today" lags).
+  align?: "calendar" | "rolling"; // week/month/year framing; default "calendar"
+  periods?: RangeKey[]; // which range chips to show; default all four
 }
 
 // --- HA statistics WS shapes (not in custom-card-helpers) --------------------
@@ -51,14 +51,32 @@ type HassWS = HomeAssistant & {
 };
 
 type RangeKey = "day" | "week" | "month" | "year";
-const RANGES: Record<RangeKey, { period: StatPeriod; days: number; cap: string }> = {
-  day: { period: "hour", days: 1, cap: "Today · 24 h" },
-  week: { period: "day", days: 7, cap: "This week" },
-  month: { period: "day", days: 31, cap: "This month" },
-  year: { period: "month", days: 366, cap: "Last 12 months" },
-};
+const PERIOD_FOR: Record<RangeKey, StatPeriod> = { day: "hour", week: "day", month: "day", year: "month" };
+const ROLL_DAYS: Record<RangeKey, number> = { day: 1, week: 7, month: 30, year: 365 };
+const CAL_CAP: Record<RangeKey, string> = { day: "Today · 24 h", week: "This week", month: "This month", year: "This year" };
+const ROLL_CAP: Record<RangeKey, string> = { day: "Last 24 h", week: "Last 7 days", month: "Last 30 days", year: "Last 12 months" };
 
 const DAY_MS = 86400000;
+const startOfDay = (d: Date): Date => {
+  const x = new Date(d);
+  x.setHours(0, 0, 0, 0);
+  return x;
+};
+const startOfWeek = (d: Date): Date => {
+  const x = startOfDay(d);
+  x.setDate(x.getDate() - ((x.getDay() + 6) % 7)); // back to Monday
+  return x;
+};
+const startOfMonth = (d: Date): Date => {
+  const x = startOfDay(d);
+  x.setDate(1);
+  return x;
+};
+const startOfYear = (d: Date): Date => {
+  const x = startOfDay(d);
+  x.setMonth(0, 1);
+  return x;
+};
 
 const fmt = (v: number, dp: number): string => v.toFixed(dp);
 
@@ -77,7 +95,6 @@ export class EmberStatisticsCard extends LitElement implements LovelaceCard {
   @state() private meta?: StatMeta | null; // undefined = not fetched, null = fetched/not found
   @state() private rows?: StatRow[]; // undefined = not fetched
   @state() private range: RangeKey = "month";
-  @state() private ref: "today" | "yesterday" = "today";
   @state() private chartWidth = 0;
   @state() private tip?: { x: number; y: number; label: string; text: string };
 
@@ -112,16 +129,8 @@ export class EmberStatisticsCard extends LitElement implements LovelaceCard {
         letter-spacing: -0.01em;
         color: var(--primary-text-color);
       }
-      .controls {
-        margin-left: auto;
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        flex-wrap: wrap;
-        justify-content: flex-end;
-      }
-      .seg,
       .chips {
+        margin-left: auto;
         display: flex;
         gap: 4px;
         flex-wrap: wrap;
@@ -267,7 +276,10 @@ export class EmberStatisticsCard extends LitElement implements LovelaceCard {
     }
     this.config = config;
     this.range = this.defaultRange(config);
-    this.ref = config.reference ?? "today";
+    const ps = config.periods;
+    if (ps && ps.length && !ps.includes(this.range)) {
+      this.range = ps.includes("month") ? "month" : ps[0];
+    }
   }
 
   getCardSize(): number {
@@ -332,23 +344,24 @@ export class EmberStatisticsCard extends LitElement implements LovelaceCard {
     }
   }
 
-  private get offsetDays(): number {
-    return this.ref === "yesterday" ? 1 : 0;
-  }
-
-  private effectiveRange(): { period: StatPeriod; days: number; cap: string } {
-    let base: { period: StatPeriod; days: number; cap: string };
-    if (this.config?.show_period_selector === false) {
-      const period = this.config.period ?? "day";
+  private effectiveRange(): { period: StatPeriod; start: Date; end: Date; cap: string } {
+    const end = new Date();
+    if (this.config?.show_period_selector === false && this.config?.period) {
+      const period = this.config.period;
       const days = this.config.days ?? 30;
-      base = { period, days, cap: this.capFor(period, days) };
+      return { period, start: new Date(end.getTime() - days * DAY_MS), end, cap: this.capFor(period, days) };
+    }
+    const r = this.range;
+    const align = this.config?.align ?? "calendar";
+    const period = PERIOD_FOR[r];
+    let start: Date;
+    if (align === "rolling") {
+      start = new Date(end.getTime() - ROLL_DAYS[r] * DAY_MS);
     } else {
-      base = { ...RANGES[this.range] }; // copy — never mutate the shared const
+      start =
+        r === "day" ? startOfDay(end) : r === "week" ? startOfWeek(end) : r === "month" ? startOfMonth(end) : startOfYear(end);
     }
-    if (this.offsetDays > 0) {
-      base.cap = base.period === "hour" ? "Yesterday · 24 h" : `${base.cap} · to yesterday`;
-    }
-    return base;
+    return { period, start, end, cap: align === "rolling" ? ROLL_CAP[r] : CAL_CAP[r] };
   }
 
   private capFor(period: StatPeriod, days: number): string {
@@ -367,12 +380,15 @@ export class EmberStatisticsCard extends LitElement implements LovelaceCard {
       void this.fetchMeta(statId, hass);
     }
 
-    const { period, days } = this.effectiveRange();
-    const offset = this.offsetDays;
-    const key = `${statId}|${period}|${days}|${offset}`;
+    const { period, start, end } = this.effectiveRange();
+    const align = this.config?.align ?? "calendar";
+    const key =
+      this.config?.show_period_selector === false
+        ? `${statId}|s|${period}|${this.config?.days ?? 30}`
+        : `${statId}|${this.range}|${align}`;
     if (this.seriesKey !== key) {
       this.seriesKey = key;
-      void this.fetchSeries(statId, period, days, offset, hass);
+      void this.fetchSeries(statId, period, start, end, key, hass);
     }
   }
 
@@ -390,13 +406,11 @@ export class EmberStatisticsCard extends LitElement implements LovelaceCard {
   private async fetchSeries(
     statId: string,
     period: StatPeriod,
-    days: number,
-    offset: number,
+    start: Date,
+    end: Date,
+    key: string,
     hass: HassWS
   ): Promise<void> {
-    const key = `${statId}|${period}|${days}|${offset}`;
-    const end = new Date(Date.now() - offset * DAY_MS);
-    const start = new Date(end.getTime() - days * DAY_MS);
     try {
       const res = await hass.callWS<Record<string, StatRow[]>>({
         type: "recorder/statistics_during_period",
@@ -512,10 +526,6 @@ export class EmberStatisticsCard extends LitElement implements LovelaceCard {
     this.range = r; // updated() → maybeFetch() refetches for the new window
   }
 
-  private pickRef(r: "today" | "yesterday"): void {
-    this.ref = r; // updated() → maybeFetch() refetches with the new offset
-  }
-
   private showTip(x: number, y: number, label: string, value: number): void {
     this.tip = { x, y, label, text: `${fmt(value, this.dp)}${this.unit ? " " + this.unit : ""}` };
   }
@@ -542,29 +552,16 @@ export class EmberStatisticsCard extends LitElement implements LovelaceCard {
           <ha-icon .icon=${icon}></ha-icon>
           <span class="title">${title}</span>
           ${showChips
-            ? html`<div class="controls">
-                <div class="seg">
-                  ${(["today", "yesterday"] as const).map(
-                    (r) => html`<button
-                      class="chip"
-                      aria-pressed=${this.ref === r ? "true" : "false"}
-                      @click=${() => this.pickRef(r)}
-                    >
-                      ${r}
-                    </button>`
-                  )}
-                </div>
-                <div class="chips">
-                  ${(["day", "week", "month", "year"] as RangeKey[]).map(
-                    (r) => html`<button
-                      class="chip"
-                      aria-pressed=${this.range === r ? "true" : "false"}
-                      @click=${() => this.pickRange(r)}
-                    >
-                      ${r}
-                    </button>`
-                  )}
-                </div>
+            ? html`<div class="chips">
+                ${(this.config.periods ?? (["day", "week", "month", "year"] as RangeKey[])).map(
+                  (r) => html`<button
+                    class="chip"
+                    aria-pressed=${this.range === r ? "true" : "false"}
+                    @click=${() => this.pickRange(r)}
+                  >
+                    ${r}
+                  </button>`
+                )}
               </div>`
             : nothing}
         </div>
