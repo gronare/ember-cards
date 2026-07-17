@@ -8,14 +8,18 @@ const LABELS: Record<string, string> = {
   name: "Name",
   icon: "Icon",
   unit: "Unit (override)",
-  period: "Period",
+  period: "Default period",
+  periods: "Available periods",
   aggregation: "Aggregation",
+  compare: "Compare against",
   color: "Colour",
   show_sparkline: "Show sparkline",
   subtitle: "Subtitle",
 };
 
-const sel = (options: Array<{ value: string; label: string }>) => ({ select: { mode: "dropdown", options } });
+const sel = (options: Array<{ value: string; label: string }>, multiple = false) => ({
+  select: { mode: "dropdown", options, multiple },
+});
 
 export class EmberMetricEditor extends LitElement {
   @property({ attribute: false }) hass?: HomeAssistant;
@@ -38,15 +42,26 @@ export class EmberMetricEditor extends LitElement {
         ],
       },
       {
+        name: "periods",
+        selector: sel(
+          [
+            { value: "today", label: "Today" },
+            { value: "yesterday", label: "Yesterday" },
+            { value: "week", label: "This week" },
+            { value: "month", label: "This month" },
+          ],
+          true
+        ),
+      },
+      {
         type: "grid",
         schema: [
           {
-            name: "period",
+            name: "compare",
             selector: sel([
-              { value: "today", label: "Today" },
-              { value: "yesterday", label: "Yesterday" },
-              { value: "week", label: "This week" },
-              { value: "month", label: "This month" },
+              { value: "norm", label: "Norm (typical weekday)" },
+              { value: "previous", label: "Previous period" },
+              { value: "none", label: "No comparison" },
             ]),
           },
           {

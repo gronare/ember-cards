@@ -6,6 +6,7 @@ import "./ember-metric-editor";
 
 export type MetricPeriod = "today" | "yesterday" | "week" | "month";
 export type MetricAgg = "change" | "mean" | "min" | "max";
+export type MetricCompare = "norm" | "previous" | "none";
 
 export interface EmberMetricConfig extends LovelaceCardConfig {
   entity?: string;
@@ -14,8 +15,11 @@ export interface EmberMetricConfig extends LovelaceCardConfig {
   icon?: string;
   unit?: string;
   color?: string; // amber | teal | green | hex
-  period?: MetricPeriod; // default "today"
+  period?: MetricPeriod; // default first of `periods`
+  periods?: MetricPeriod[]; // which periods the chip cycles through; default all
   aggregation?: MetricAgg; // default: change if has_sum else mean
+  compare?: MetricCompare; // delta basis; default "norm"
+  norm_samples?: number; // history samples for the norm; default 8
   show_sparkline?: boolean; // default true
   subtitle?: string;
 }
@@ -38,20 +42,38 @@ interface StatRow {
 type HassWS = HomeAssistant & { callWS<T>(msg: Record<string, unknown>): Promise<T> };
 
 const DAY_MS = 86400000;
-// stat period, buckets to keep for the sparkline, which bucket is the target
-// (last = current period, prev = the one before = complete), and the vs-label.
-const PCFG: Record<MetricPeriod, { stat: "day" | "week" | "month"; spark: number; target: "last" | "prev"; win: number; vs: string }> = {
-  today: { stat: "day", spark: 7, target: "last", win: 10, vs: "vs yesterday" },
-  yesterday: { stat: "day", spark: 7, target: "prev", win: 10, vs: "vs prev day" },
-  week: { stat: "week", spark: 8, target: "last", win: 75, vs: "vs last week" },
-  month: { stat: "month", spark: 6, target: "last", win: 240, vs: "vs last month" },
+const ALL_PERIODS: MetricPeriod[] = ["today", "yesterday", "week", "month"];
+// stat granularity + fetch window (days) per period. Windows are wide enough to
+// gather ~8 comparable historical buckets for the norm.
+const PCFG: Record<MetricPeriod, { stat: "day" | "week" | "month"; win: number }> = {
+  today: { stat: "day", win: 75 },
+  yesterday: { stat: "day", win: 75 },
+  week: { stat: "week", win: 84 },
+  month: { stat: "month", win: 340 },
 };
 const LABEL: Record<MetricPeriod, string> = { today: "Today", yesterday: "Yesterday", week: "This week", month: "This month" };
 const fmt = (v: number, dp: number): string => v.toFixed(dp);
+const startOfDay = (d: Date): Date => {
+  const x = new Date(d);
+  x.setHours(0, 0, 0, 0);
+  return x;
+};
+const sameDay = (a: Date, b: Date): boolean =>
+  a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+const mean = (a: number[]): number => a.reduce((s, v) => s + v, 0) / a.length;
 
-// Compact single-value statistic tile (air-quality sized): one number for a
-// period (today/yesterday/this week/this month) + a delta vs the previous
-// period + a small sparkline for context. The right home for "yesterday's kWh".
+interface Computed {
+  value: number | null;
+  partial: boolean; // target period is the current (incomplete) one
+  delta: number | null; // shown only for a complete target
+  vs: string;
+  spark: number[];
+}
+
+// Compact single-value statistic tile (air-quality sized). One number for a
+// period + an honest comparison: complete periods (yesterday) show a delta vs
+// the norm for that weekday; current partial periods show the running value
+// only. "Today" honestly reports no data when the provider hasn't posted it.
 export class EmberMetric extends LitElement implements LovelaceCard {
   @property({ attribute: false }) hass?: HomeAssistant;
   @state() private config?: EmberMetricConfig;
@@ -95,6 +117,10 @@ export class EmberMetric extends LitElement implements LovelaceCard {
         border-radius: 999px;
         padding: 4px 10px;
         cursor: pointer;
+        user-select: none;
+      }
+      .period.static {
+        cursor: default;
       }
       .big {
         display: flex;
@@ -162,7 +188,9 @@ export class EmberMetric extends LitElement implements LovelaceCard {
       this.seriesKey = undefined;
     }
     this.config = config;
-    this.period = config.period ?? "today";
+    const avail = this.periodList(config);
+    const want = config.period ?? avail[0];
+    this.period = avail.includes(want) ? want : avail[0];
   }
   getCardSize(): number {
     return 2;
@@ -171,7 +199,12 @@ export class EmberMetric extends LitElement implements LovelaceCard {
     return document.createElement("ember-metric-editor");
   }
   static getStubConfig(): Omit<EmberMetricConfig, "type"> {
-    return { period: "today", show_sparkline: true };
+    return { period: "yesterday", compare: "norm", show_sparkline: true };
+  }
+
+  private periodList(config?: EmberMetricConfig): MetricPeriod[] {
+    const ps = (config ?? this.config)?.periods;
+    return ps && ps.length ? ps : ALL_PERIODS;
   }
 
   private get statId(): string | undefined {
@@ -253,25 +286,82 @@ export class EmberMetric extends LitElement implements LovelaceCard {
     return `--ember-accent:${v};--ember-accent-strong:${v};--ember-accent-bg:color-mix(in srgb, ${v} 15%, transparent)`;
   }
 
-  private values(): number[] {
-    const rows = this.rows ?? [];
-    const out: number[] = [];
-    for (const row of rows) {
-      let v: number | null | undefined;
-      if (this.agg === "change") v = row.change;
-      else if (this.agg === "mean") v = row.mean ?? row.state;
-      else if (this.agg === "min") v = row.min;
-      else v = row.max;
-      if (v == null || Number.isNaN(+v)) continue;
-      out.push(+v);
+  private aggVal(row: StatRow): number | null {
+    let v: number | null | undefined;
+    if (this.agg === "change") v = row.change;
+    else if (this.agg === "mean") v = row.mean ?? row.state;
+    else if (this.agg === "min") v = row.min;
+    else v = row.max;
+    return v == null || Number.isNaN(+v) ? null : +v;
+  }
+
+  private points(): { ts: Date; val: number }[] {
+    const out: { ts: Date; val: number }[] = [];
+    for (const row of this.rows ?? []) {
+      const v = this.aggVal(row);
+      if (v == null) continue;
+      const ts = typeof row.start === "number" ? new Date(row.start) : new Date(Date.parse(row.start));
+      out.push({ ts, val: v });
     }
+    out.sort((a, b) => a.ts.getTime() - b.ts.getTime());
     return out;
+  }
+
+  private compute(): Computed {
+    const period = this.period;
+    const compare = this.config?.compare ?? "norm";
+    const samples = this.config?.norm_samples ?? 8;
+    const pts = this.points();
+    const now = new Date();
+
+    if (period === "today" || period === "yesterday") {
+      const targetDate = startOfDay(period === "today" ? now : new Date(now.getTime() - DAY_MS));
+      const target = pts.find((p) => sameDay(p.ts, targetDate));
+      const value = target ? target.val : null;
+      const partial = period === "today";
+      // recent same-weekday values, strictly before today, excluding the target
+      const wd = targetDate.getDay();
+      const sameWd = pts.filter(
+        (p) => p.ts.getDay() === wd && startOfDay(p.ts) < startOfDay(now) && !sameDay(p.ts, targetDate)
+      );
+      const normVals = sameWd.slice(-samples).map((p) => p.val);
+      let delta: number | null = null;
+      let vs = "";
+      if (value != null && !partial) {
+        if (compare === "norm" && normVals.length) {
+          delta = value - mean(normVals);
+          vs = "vs typ. " + targetDate.toLocaleDateString(undefined, { weekday: "short" });
+        } else if (compare === "previous") {
+          const idx = pts.findIndex((p) => sameDay(p.ts, targetDate));
+          if (idx > 0) {
+            delta = value - pts[idx - 1].val;
+            vs = "vs prev day";
+          }
+        }
+      }
+      const spark = [...sameWd.slice(-(samples - 1)).map((p) => p.val), ...(value != null ? [value] : [])];
+      return { value, partial, delta, vs, spark };
+    }
+
+    // week / month → the last bucket is the current (partial) period
+    const value = pts.length ? pts[pts.length - 1].val : null;
+    const prev = pts.slice(0, -1).map((p) => p.val);
+    let delta: number | null = null;
+    let vs = "";
+    if (compare === "previous" && value != null && prev.length) {
+      delta = value - prev[prev.length - 1];
+      vs = period === "week" ? "vs last week" : "vs last month";
+    }
+    // (norm comparison for a *partial* week/month would be misleading, so skip)
+    const spark = pts.slice(-samples).map((p) => p.val);
+    return { value, partial: true, delta, vs, spark };
   }
 
   private cyclePeriod(e: Event): void {
     e.stopPropagation();
-    const order: MetricPeriod[] = ["today", "yesterday", "week", "month"];
-    this.period = order[(order.indexOf(this.period) + 1) % order.length];
+    const list = this.periodList();
+    if (list.length < 2) return;
+    this.period = list[(list.indexOf(this.period) + 1) % list.length];
   }
 
   private sparkline(vals: number[]): SVGTemplateResult | typeof nothing {
@@ -297,41 +387,46 @@ export class EmberMetric extends LitElement implements LovelaceCard {
 
   render(): TemplateResult | typeof nothing {
     if (!this.config) return nothing;
-    const cfg = PCFG[this.period];
     const statId = this.statId;
     const title = this.config.name ?? this.meta?.name ?? statId ?? "Metric";
     const icon = this.config.icon ?? (this.hasSum ? "mdi:lightning-bolt" : "mdi:gauge");
     const loading = this.meta === undefined || this.rows === undefined || !statId;
+    const multi = this.periodList().length > 1;
 
-    const vals = loading ? [] : this.values();
-    const n = vals.length;
-    const ti = cfg.target === "prev" ? n - 2 : n - 1;
-    const has = ti >= 0;
-    const value = has ? vals[ti] : null;
-    const delta = has && ti - 1 >= 0 ? value! - vals[ti - 1] : null;
-    const sparkEnd = ti + 1;
-    const spark = this.config.show_sparkline === false ? [] : vals.slice(Math.max(0, sparkEnd - cfg.spark), sparkEnd);
+    const c: Computed = loading ? { value: null, partial: false, delta: null, vs: "", spark: [] } : this.compute();
     const unit = this.unit;
-    const up = (delta ?? 0) >= 0;
+    const up = (c.delta ?? 0) >= 0;
+    const spark = this.config.show_sparkline === false ? [] : c.spark;
+
+    // sub-line: delta for complete periods; "so far" for partial current; else state
+    let sub: TemplateResult;
+    if (c.delta != null) {
+      sub = html`<span class="delta">${up ? "▲" : "▼"} ${fmt(Math.abs(c.delta), this.dp)}${unit ? " " + unit : ""}</span>
+        <span class="vs">${c.vs}</span>`;
+    } else if (loading) {
+      sub = html`<span class="vs">loading…</span>`;
+    } else if (c.value == null) {
+      sub = html`<span class="vs">${this.period === "today" ? "no data yet" : "no data"}</span>`;
+    } else if (c.partial) {
+      sub = html`<span class="vs">so far</span>`;
+    } else {
+      sub = html`<span class="vs"></span>`;
+    }
 
     return html`
       <ha-card style=${this.colorOverride()}>
         <div class="head">
           <ha-icon .icon=${icon}></ha-icon>
           <span class="t">${title}</span>
-          <span class="period" @click=${(e: Event) => this.cyclePeriod(e)}>${LABEL[this.period]} ▾</span>
+          <span class="period ${multi ? "" : "static"}" @click=${(e: Event) => this.cyclePeriod(e)}
+            >${LABEL[this.period]}${multi ? " ▾" : ""}</span
+          >
         </div>
         <div class="big">
-          <span class="num">${loading ? "—" : value == null ? "—" : fmt(value, this.dp)}</span>
+          <span class="num">${loading || c.value == null ? "—" : fmt(c.value, this.dp)}</span>
           ${unit ? html`<span class="unit">${unit}</span>` : nothing}
         </div>
-        <div class="sub2">
-          ${delta != null
-            ? html`<span class="delta">${up ? "▲" : "▼"} ${fmt(Math.abs(delta), this.dp)}${unit ? " " + unit : ""}</span>
-                <span class="vs">${cfg.vs}</span>`
-            : html`<span class="vs">${loading ? "loading…" : value == null ? "no data" : ""}</span>`}
-          ${spark.length ? html`<span class="spark">${this.sparkline(spark)}</span>` : nothing}
-        </div>
+        <div class="sub2">${sub}${spark.length >= 2 ? html`<span class="spark">${this.sparkline(spark)}</span>` : nothing}</div>
         ${this.config.subtitle ? html`<div class="foot">${this.config.subtitle}</div>` : nothing}
       </ha-card>
     `;
@@ -343,7 +438,7 @@ if (!customElements.get("ember-metric")) {
   (window.customCards = window.customCards || []).push({
     type: "ember-metric",
     name: "Ember Metric",
-    description: "Compact single-value statistic tile (today/yesterday/week/month)",
+    description: "Compact single-value statistic tile (period + norm comparison)",
     preview: true,
   });
 }
