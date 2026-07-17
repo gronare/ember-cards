@@ -10,6 +10,7 @@ export interface EmberAirConfig extends LovelaceCardConfig {
   co2?: string;
   toggle?: string; // display on/off switch
   subtitle?: string;
+  navigate?: string; // tap -> open this hash (e.g. an ember-sensor-detail popup)
 }
 
 const D = "sensor.alpstuga_air_quality_monitor";
@@ -27,6 +28,12 @@ export class EmberAir extends LitElement implements LovelaceCard {
         grid-template-columns: 1fr auto;
         grid-template-areas: "hd tgl" "body body";
         gap: 10px 8px;
+      }
+      ha-card.tappable {
+        cursor: pointer;
+      }
+      ha-card.tappable:hover {
+        border-color: #34373d;
       }
       .hd {
         grid-area: hd;
@@ -101,9 +108,13 @@ export class EmberAir extends LitElement implements LovelaceCard {
     return e ? this.hass?.states[e] : undefined;
   }
 
-  private toggleDisplay(): void {
+  private toggleDisplay(e: Event): void {
+    e.stopPropagation();
     if (this.config?.toggle)
       this.hass?.callService("homeassistant", "toggle", { entity_id: this.config.toggle });
+  }
+  private navigate(): void {
+    if (this.config?.navigate) window.location.hash = this.config.navigate;
   }
 
   render(): TemplateResult | typeof nothing {
@@ -132,7 +143,7 @@ export class EmberAir extends LitElement implements LovelaceCard {
         : "var(--ember-alert)";
     const tglOn = this.s(c.toggle)?.state === "on";
     return html`
-      <ha-card>
+      <ha-card class=${c.navigate ? "tappable" : ""} @click=${() => this.navigate()}>
         <div class="hd">
           <ha-icon icon="mdi:weather-windy"></ha-icon>
           <span class="t">Air quality</span>
@@ -142,7 +153,7 @@ export class EmberAir extends LitElement implements LovelaceCard {
               class="tgl"
               icon=${tglOn ? "mdi:monitor" : "mdi:monitor-off"}
               style="color:${tglOn ? "var(--info-color,#3f9bd6)" : "var(--disabled-text-color)"}"
-              @click=${() => this.toggleDisplay()}
+              @click=${(e: Event) => this.toggleDisplay(e)}
             ></ha-icon>`
           : nothing}
         <div class="body">

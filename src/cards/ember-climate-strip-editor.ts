@@ -5,7 +5,13 @@ import type { EmberClimateStripConfig, ClimateTile } from "./ember-climate-strip
 import "../shared/entity-rows";
 
 const ROW_SCHEMA = [
-  { name: "name", selector: { text: {} } },
+  {
+    type: "grid",
+    schema: [
+      { name: "name", selector: { text: {} } },
+      { name: "navigate", selector: { text: {} } },
+    ],
+  },
   {
     type: "grid",
     schema: [
@@ -14,7 +20,7 @@ const ROW_SCHEMA = [
     ],
   },
 ];
-const ROW_LABELS = { name: "Room name", temp: "Temp sensor", humidity: "Humidity sensor" };
+const ROW_LABELS = { name: "Room name", navigate: "Tap opens (hash)", temp: "Temp sensor", humidity: "Humidity sensor" };
 const SCALAR_LABELS: Record<string, string> = { title: "Title", suffix: "Suffix (right)" };
 
 export class EmberClimateStripEditor extends LitElement {
@@ -86,7 +92,7 @@ export class EmberClimateStripEditor extends LitElement {
           .hass=${this.hass}
           .rows=${this.config.rooms ?? []}
           .rowSchema=${ROW_SCHEMA}
-          .newRow=${{ name: "", temp: "", humidity: "" }}
+          .newRow=${{ name: "", navigate: "", temp: "", humidity: "" }}
           .labels=${ROW_LABELS}
           addLabel="+ Add room"
           @value-changed=${this.onRooms}

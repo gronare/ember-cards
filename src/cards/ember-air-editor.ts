@@ -9,6 +9,7 @@ const LABELS: Record<string, string> = {
   co2: "CO₂ sensor",
   toggle: "Display on/off switch",
   subtitle: "Subtitle",
+  navigate: "Tap opens (hash)",
 };
 
 export class EmberAirEditor extends LitElement {
@@ -32,7 +33,13 @@ export class EmberAirEditor extends LitElement {
         ],
       },
       { name: "toggle", selector: { entity: { domain: "switch" } } },
-      { name: "subtitle", selector: { text: {} } },
+      {
+        type: "grid",
+        schema: [
+          { name: "subtitle", selector: { text: {} } },
+          { name: "navigate", selector: { text: {} } },
+        ],
+      },
     ];
   }
 

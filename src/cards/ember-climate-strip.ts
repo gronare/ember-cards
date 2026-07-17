@@ -8,6 +8,7 @@ export interface ClimateTile {
   name: string;
   temp?: string;
   humidity?: string;
+  navigate?: string; // tap -> open this hash
 }
 export interface EmberClimateStripConfig extends LovelaceCardConfig {
   title?: string;
@@ -65,6 +66,18 @@ export class EmberClimateStrip extends LitElement implements LovelaceCard {
         background: rgba(127, 140, 150, 0.1);
         border-radius: 11px;
         padding: 11px 12px;
+        border: 1px solid transparent;
+        transition: 0.12s;
+      }
+      .tile.tappable {
+        cursor: pointer;
+      }
+      .tile.tappable:hover {
+        border-color: #34373d;
+        background: rgba(127, 140, 150, 0.14);
+      }
+      .tile.tappable:active {
+        transform: scale(0.985);
       }
       .tile .name {
         font-size: 11.5px;
@@ -110,6 +123,10 @@ export class EmberClimateStrip extends LitElement implements LovelaceCard {
     return e ? this.hass?.states[e] : undefined;
   }
 
+  private navigate(hash?: string): void {
+    if (hash) window.location.hash = hash;
+  }
+
   render(): TemplateResult | typeof nothing {
     if (!this.config) return nothing;
     const rooms = this.config.rooms ?? [];
@@ -128,7 +145,10 @@ export class EmberClimateStrip extends LitElement implements LovelaceCard {
             const h = this.s(r.humidity);
             const tv = t && !isNaN(+t.state) ? (+t.state).toFixed(1) : "—";
             const hv = h && !isNaN(+h.state) ? Math.round(+h.state) : "—";
-            return html`<div class="tile">
+            return html`<div
+              class="tile ${r.navigate ? "tappable" : ""}"
+              @click=${() => this.navigate(r.navigate)}
+            >
               <div class="name">${r.name}</div>
               <div class="temp">${tv}<sup>°C</sup></div>
               <div class="hum">${hv}% rh</div>
