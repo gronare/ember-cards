@@ -8,8 +8,12 @@
 import "./cards/ember-room-card";
 import "./cards/ember-shortcuts-row";
 import "./cards/ember-climate-card";
+import "./cards/ember-header";
+import "./cards/ember-actionables";
+import "./cards/ember-air";
+import "./cards/ember-climate-strip";
 
-export const VERSION = "0.0.5";
+export const VERSION = "0.0.6";
 
 declare global {
   interface Window {

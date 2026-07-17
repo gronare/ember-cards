@@ -7,6 +7,12 @@ export const emberTokens = css`
     --ember-accent: var(--gr-accent, #e0a03c);
     --ember-accent-strong: var(--gr-accent-strong, #e8b24a);
     --ember-accent-bg: var(--gr-accent-bg, rgba(224, 160, 60, 0.15));
+    --ember-good: var(--gr-good, #52b583);
+    --ember-teal: var(--gr-teal-strong, #4cb8af);
+    --ember-teal-bg: var(--gr-teal-bg, rgba(46, 155, 147, 0.14));
+    --ember-warn: var(--gr-warn, #e0a94a);
+    --ember-alert: var(--gr-alert, #e5705c);
+    --ember-mono: ui-monospace, Menlo, Consolas, monospace;
     --ember-radius: 20px;
     --ember-pad: 20px;
   }
