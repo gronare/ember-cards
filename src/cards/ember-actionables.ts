@@ -3,50 +3,96 @@ import { property, state } from "lit/decorators.js";
 import type { HomeAssistant, LovelaceCard, LovelaceCardConfig } from "custom-card-helpers";
 import { emberTokens, emberCard } from "../shared/theme";
 
-type Tint = "amber" | "teal" | "good" | "warn";
+type Tier = "alert" | "active" | "ambient";
 interface Item {
+  tier: Tier;
   icon: string;
-  tint: Tint;
   label: string;
-  value: TemplateResult | string;
-  bar?: number;
-  badge?: { text?: string; icon?: string; tint: Tint; click?: string };
+  value: string;
+  tint: string; // resolved css colour for chip/bar/icon/badge
+  ambient?: boolean; // neutral chip bg, tint = icon-only cue
+  bar?: number; // progress %
+  badge?: { text?: string; icon?: string; pill?: boolean; onClick?: () => void };
+  onTap?: () => void;
 }
 
 export interface EmberActionablesConfig extends LovelaceCardConfig {
-  washer?: { status?: string; remaining?: string; total?: string; operation?: string; name?: string };
+  max_items?: number; // default 2
   paused_grace?: number; // minutes a paused media stays with a resume button; default 45
+  battery_threshold?: number; // default 15
+  washer?: { status?: string; remaining?: string; total?: string; operation?: string; name?: string; unload?: string };
+  air?: { co2?: string; pm25?: string; category?: string };
+  health?: { zigbee?: string; coordinator_eth?: string; coordinator_net?: string; bt_proxy?: string; navigate?: string };
+  lock?: { entity?: string; persons?: string[] };
 }
 
 const WASH_ON = ["run", "running", "wash", "washing", "rinse", "rinsing", "spin", "spinning", "drying", "steam"];
-const TINT: Record<Tint, [string, string]> = {
-  amber: ["var(--ember-accent)", "var(--ember-accent-bg)"],
-  teal: ["var(--ember-teal)", "var(--ember-teal-bg)"],
-  good: ["var(--ember-good)", "rgba(82,181,131,0.13)"],
-  warn: ["var(--ember-warn)", "rgba(224,169,74,0.14)"],
+const D = {
+  wStatus: "sensor.wall_e_current_status",
+  wRem: "sensor.wall_e_remaining_time",
+  wTot: "sensor.wall_e_total_time",
+  wOp: "select.wall_e_operation",
+  wName: "Wall-E",
+  wUnload: "input_boolean.washer_needs_unload",
+  co2: "sensor.alpstuga_air_quality_monitor_carbon_dioxide",
+  airCat: "sensor.alpstuga_air_quality_monitor_air_quality",
+  zigbee: "binary_sensor.zigbee2mqtt_bridge_connection_state",
+  cEth: "binary_sensor.slzb_mr5u_ethernet",
+  cNet: "binary_sensor.slzb_mr5u_internet",
+  btProxy: "sensor.bluetooth_proxy_slzb_06_uptime",
+  healthNav: "#wardrobe",
+  lock: "lock.front_door_lock",
+  persons: ["person.carl_green", "person.di"],
+};
+const num = (v: string | undefined): number | null =>
+  v == null || v === "" || isNaN(+v) ? null : +v;
+const parseDur = (s?: string): number | null => {
+  if (!s) return null;
+  const p = s.split(":").map(Number);
+  return p.length === 3 ? p[0] * 3600 + p[1] * 60 + p[2] : null;
 };
 
-// Dynamic "what needs me now": washer -> playing media -> active timer ->
-// updates -> calm. Shows at most two items, highest priority first.
+// "What needs me now" — a strict Alert > Active > Ambient tier ladder over the
+// home's signals; 2 rows always, hairline overflow footer, alert left-bar
+// grammar. Content model designed by fable (see vault).
 export class EmberActionables extends LitElement implements LovelaceCard {
   @property({ attribute: false }) hass?: HomeAssistant;
   @state() private config?: EmberActionablesConfig;
   @state() private tick = 0;
   private timer?: number;
+  private since = new Map<string, number>(); // debounce/hysteresis timestamps
 
   static styles = [
     emberTokens,
     emberCard,
     css`
+      ha-card {
+        display: flex;
+        flex-direction: column;
+      }
       .item {
         display: flex;
         gap: 16px;
         align-items: center;
+        position: relative;
       }
       .item + .item {
         border-top: 1px solid var(--divider-color);
         margin-top: 13px;
         padding-top: 13px;
+      }
+      .item.alert {
+        padding-left: 12px;
+      }
+      .item.alert::before {
+        content: "";
+        position: absolute;
+        left: 0;
+        top: 4px;
+        bottom: 4px;
+        width: 3px;
+        border-radius: 999px;
+        background: var(--rt);
       }
       .chip {
         width: 54px;
@@ -80,21 +126,18 @@ export class EmberActionables extends LitElement implements LovelaceCard {
         text-overflow: ellipsis;
         white-space: nowrap;
       }
-      .val b {
-        font-variant-numeric: tabular-nums;
-      }
       .bar {
-        height: 6px;
-        border-radius: 6px;
-        background: rgba(127, 140, 150, 0.15);
+        height: 4px;
+        border-radius: 999px;
+        background: var(--divider-color);
         margin-top: 10px;
         overflow: hidden;
       }
       .bar i {
         display: block;
         height: 100%;
-        border-radius: 6px;
-        background: linear-gradient(90deg, var(--gr-teal, #2e9b93), var(--ember-good));
+        border-radius: 999px;
+        background: var(--rt);
       }
       .badge {
         font-family: var(--ember-mono);
@@ -105,16 +148,64 @@ export class EmberActionables extends LitElement implements LovelaceCard {
         flex: none;
         display: inline-flex;
         align-items: center;
+        gap: 4px;
       }
       .badge ha-icon {
         --mdc-icon-size: 20px;
         display: block;
+      }
+      .badge.pill {
+        border: 1px solid;
+        padding: 4px 12px;
+        text-transform: uppercase;
+        font-weight: 600;
       }
       .badge.click {
         cursor: pointer;
       }
       .badge.click:hover {
         filter: brightness(1.15);
+      }
+      .item.tap {
+        cursor: pointer;
+      }
+      /* overflow footer */
+      .more {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        border-top: 1px solid var(--divider-color);
+        margin-top: 12px;
+        padding-top: 9px;
+        font-family: var(--ember-mono);
+        font-size: 10.5px;
+        letter-spacing: 0.04em;
+        color: var(--secondary-text-color);
+        flex-wrap: wrap;
+      }
+      .more .m {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        text-transform: uppercase;
+      }
+      .more .d {
+        width: 5px;
+        height: 5px;
+        border-radius: 50%;
+      }
+      /* calm */
+      .calm {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+      }
+      .calm .chip ha-icon {
+        color: color-mix(in srgb, var(--ember-good) 75%, transparent);
+      }
+      .calm .badge {
+        margin-left: auto;
+        color: var(--secondary-text-color);
       }
     `,
   ];
@@ -138,135 +229,301 @@ export class EmberActionables extends LitElement implements LovelaceCard {
     if (this.timer) clearInterval(this.timer);
   }
 
+  // hysteresis + sustain: arm on `on`, release on `off`, hold in between;
+  // returns true once armed for >= ms.
+  private hold(key: string, on: boolean, off: boolean, ms: number): boolean {
+    if (on) {
+      if (!this.since.has(key)) this.since.set(key, Date.now());
+    } else if (off) {
+      this.since.delete(key);
+      return false;
+    }
+    const t = this.since.get(key);
+    return t != null && Date.now() - t >= ms;
+  }
+
+  private call(domain: string, service: string, entity: string): void {
+    this.hass?.callService(domain, service, { entity_id: entity });
+  }
+  private moreInfo(entityId: string): void {
+    this.dispatchEvent(new CustomEvent("hass-more-info", { detail: { entityId }, bubbles: true, composed: true }));
+  }
+  private navigate(path: string): void {
+    if (path.startsWith("#")) window.location.hash = path;
+    else {
+      history.pushState(null, "", path);
+      window.dispatchEvent(new Event("location-changed"));
+    }
+  }
+
   private items(): Item[] {
     const hass = this.hass;
-    if (!hass) return [];
-    const items: Item[] = [];
-    // Actionable, time-bound items first: active timers, then the washer.
+    if (!hass || !this.config) return [];
+    const cfg = this.config;
+    const s = (e: string) => hass.states[e];
+    const out: Item[] = [];
+
+    // ── ALERT 1 · unlocked away (dormant while the lock is unavailable) ──
+    const lockE = cfg.lock?.entity ?? D.lock;
+    const lock = s(lockE);
+    if (lock && !["unavailable", "unknown"].includes(lock.state)) {
+      const persons = cfg.lock?.persons ?? D.persons;
+      const away = persons.every((p) => s(p)?.state !== "home");
+      const cond = lock.state === "unlocked" && away;
+      if (this.hold("lock", cond, !cond, 120000)) {
+        out.push({
+          tier: "alert",
+          icon: "mdi:lock-open-variant",
+          label: "Front door",
+          value: "Unlocked — nobody home",
+          tint: "var(--ember-alert)",
+          badge: { text: "Lock", pill: true, onClick: () => this.call("lock", "lock", lockE) },
+          onTap: () => this.call("lock", "lock", lockE),
+        });
+      }
+    }
+
+    // ── ALERT 2 · system degraded ──
+    const zb = s(cfg.health?.zigbee ?? D.zigbee);
+    const eth = s(cfg.health?.coordinator_eth ?? D.cEth);
+    const net = s(cfg.health?.coordinator_net ?? D.cNet);
+    const bt = s(cfg.health?.bt_proxy ?? D.btProxy);
+    const down: { t: string; sev: "alert" | "warn" }[] = [];
+    if (zb && zb.state === "off") down.push({ t: "Zigbee mesh offline", sev: "alert" });
+    if (eth && eth.state === "off") down.push({ t: "Coordinator offline", sev: "alert" });
+    else if (net && net.state === "off") down.push({ t: "Coordinator: no internet", sev: "warn" });
+    if (bt && ["unavailable", "unknown"].includes(bt.state)) down.push({ t: "BT proxy offline", sev: "warn" });
+    if (this.hold("sys", down.length > 0, down.length === 0, 300000) && down.length) {
+      const alert = down.some((d) => d.sev === "alert");
+      const worst = down.find((d) => d.sev === "alert") ?? down[0];
+      out.push({
+        tier: "alert",
+        icon: "mdi:lan-disconnect",
+        label: "System",
+        value: worst.t + (down.length > 1 ? ` +${down.length - 1}` : ""),
+        tint: alert ? "var(--ember-alert)" : "var(--ember-warn)",
+        badge: { text: "Down" },
+        onTap: () => this.navigate(cfg.health?.navigate ?? D.healthNav),
+      });
+    }
+
+    // ── ALERT 3 · ventilate (hysteresis 1200 up / 1000 down; sustain 5 min) ──
+    const co2E = cfg.air?.co2 ?? D.co2;
+    const co2 = num(s(co2E)?.state);
+    const poor = s(cfg.air?.category ?? D.airCat)?.state === "poor";
+    const ventOn = (co2 != null && co2 >= 1200) || poor;
+    const ventOff = (co2 == null || co2 < 1000) && !poor;
+    if (this.hold("vent", ventOn, ventOff, 300000)) {
+      out.push({
+        tier: "alert",
+        icon: "mdi:weather-windy",
+        label: "Air",
+        value: co2 != null && co2 >= 1200 ? `CO₂ ${Math.round(co2)} ppm — ventilate` : "Air poor — ventilate",
+        tint: "var(--ember-warn)",
+        bar: co2 != null ? Math.max(0, Math.min(100, ((co2 - 800) / 800) * 100)) : undefined,
+        badge: { text: poor ? "Poor" : "High" },
+        onTap: () => this.moreInfo(co2E),
+      });
+    }
+
+    // ── ACTIVE · timers (soonest first) ──
     Object.keys(hass.states)
-      .filter((e) => e.startsWith("timer.") && hass.states[e].state === "active")
-      .forEach((e) => {
-        const tm = hass.states[e];
-        const fin = tm.attributes.finishes_at
-          ? Math.max(0, Math.round((new Date(tm.attributes.finishes_at).getTime() - Date.now()) / 60000))
+      .filter((e) => e.startsWith("timer.") && s(e).state === "active")
+      .map((e) => ({ e, st: s(e) }))
+      .sort((a, b) => (Date.parse(a.st.attributes.finishes_at || "") || 0) - (Date.parse(b.st.attributes.finishes_at || "") || 0))
+      .forEach(({ e, st }) => {
+        const fin = st.attributes.finishes_at
+          ? Math.max(0, Math.round((Date.parse(st.attributes.finishes_at) - Date.now()) / 60000))
           : null;
-        items.push({
+        const dur = parseDur(st.attributes.duration);
+        const rem = st.attributes.finishes_at ? Math.max(0, (Date.parse(st.attributes.finishes_at) - Date.now()) / 1000) : null;
+        out.push({
+          tier: "active",
           icon: "mdi:timer-outline",
-          tint: "warn",
-          label: "Timer",
-          value: html`${tm.attributes.friendly_name || e}${fin != null
-            ? html` — <b style="color:var(--ember-warn)">${fin} min</b> left`
-            : ""}`,
+          label: st.attributes.friendly_name || "Timer",
+          value: fin != null ? `${fin} min left` : "Running",
+          tint: "var(--ember-accent)",
+          bar: dur && rem != null ? Math.max(0, Math.min(100, (1 - rem / dur) * 100)) : undefined,
+          onTap: () => this.moreInfo(e),
         });
       });
-    const w = this.config?.washer ?? {};
-    const statusE = w.status ?? "sensor.wall_e_current_status";
-    const ws = hass.states[statusE];
-    const wsSt = ws ? String(ws.state).toLowerCase() : "";
-    if (WASH_ON.includes(wsSt)) {
-      const rt = hass.states[w.remaining ?? "sensor.wall_e_remaining_time"];
-      const tt = hass.states[w.total ?? "sensor.wall_e_total_time"];
+
+    // ── ACTIVE · washer done → unload ──
+    const unloadE = cfg.washer?.unload ?? D.wUnload;
+    if (s(unloadE)?.state === "on") {
+      out.push({
+        tier: "active",
+        icon: "mdi:washing-machine",
+        label: "Washer",
+        value: "Done — unload",
+        tint: "var(--ember-good)",
+        badge: { text: "Done" },
+        onTap: () => this.call("input_boolean", "turn_off", unloadE),
+      });
+    }
+
+    // ── ACTIVE · washer running ──
+    const ws = s(cfg.washer?.status ?? D.wStatus);
+    if (ws && WASH_ON.includes(String(ws.state).toLowerCase())) {
+      const rt = s(cfg.washer?.remaining ?? D.wRem);
+      const tt = s(cfg.washer?.total ?? D.wTot);
       let rem: number | null = null;
       if (rt && rt.state && !["unknown", "unavailable"].includes(rt.state))
         rem = Math.max(0, Math.round((new Date(rt.state).getTime() - Date.now()) / 60000));
       let pct: number | null = null;
       if (rem != null && tt && !isNaN(+tt.state) && +tt.state > 0)
         pct = Math.min(98, Math.max(3, Math.round(100 * (1 - rem / +tt.state))));
-      const op = hass.states[w.operation ?? "select.wall_e_operation"];
+      const op = s(cfg.washer?.operation ?? D.wOp);
       const prog = op && !["unknown", "unavailable"].includes(op.state) ? op.state : "";
-      items.push({
+      out.push({
+        tier: "active",
         icon: "mdi:washing-machine",
-        tint: "amber",
-        label: (w.name ?? "Wall-E") + (prog ? " · " + prog : ""),
-        value: html`Washing — <b style="color:var(--ember-teal)">${rem != null ? rem + " min" : "…"}</b> remaining`,
+        label: (cfg.washer?.name ?? D.wName) + (prog ? " · " + prog : ""),
+        value: `Washing — ${rem != null ? rem + " min" : "…"} remaining`,
+        tint: "var(--ember-teal)",
         bar: pct == null ? 60 : pct,
-        badge: { text: "RUNNING", tint: "teal" },
+        badge: { text: "Running" },
       });
     }
-    // Media last (passive): playing (tap to pause), then recently-paused within
-    // the grace window (tap to resume). Drops on idle/off/stop or when grace
-    // elapses, or when bumped out of the 2 slots by the items above.
-    const graceMs = (this.config?.paused_grace ?? 45) * 60000;
+
+    // ── ACTIVE · media (playing → recently-paused within grace) ──
+    const graceMs = (cfg.paused_grace ?? 45) * 60000;
     Object.keys(hass.states)
       .filter((e) => e.startsWith("media_player."))
-      .map((e) => ({ e, s: hass.states[e] }))
-      .filter(
-        ({ s }) =>
-          s.state === "playing" ||
-          (s.state === "paused" && Date.now() - Date.parse(s.last_changed) < graceMs)
-      )
-      .sort((a, b) => (a.s.state === "playing" ? 0 : 1) - (b.s.state === "playing" ? 0 : 1))
+      .map((e) => ({ e, st: s(e) }))
+      .filter(({ st }) => st.state === "playing" || (st.state === "paused" && Date.now() - Date.parse(st.last_changed) < graceMs))
+      .sort((a, b) => (a.st.state === "playing" ? 0 : 1) - (b.st.state === "playing" ? 0 : 1))
       .slice(0, 2)
-      .forEach(({ e, s }) => {
-        const playing = s.state === "playing";
-        const t = s.attributes.media_title || (playing ? "Playing" : "Paused");
-        const art = s.attributes.media_artist || s.attributes.app_name || "";
-        const nm = s.attributes.friendly_name || e.split(".")[1];
-        items.push({
+      .forEach(({ e, st }) => {
+        const playing = st.state === "playing";
+        const t = st.attributes.media_title || (playing ? "Playing" : "Paused");
+        const art = st.attributes.media_artist || st.attributes.app_name || "";
+        const nm = st.attributes.friendly_name || e.split(".")[1];
+        out.push({
+          tier: "active",
           icon: "mdi:music-note",
-          tint: "teal",
           label: (playing ? "Now playing · " : "Paused · ") + nm,
           value: t + (art ? " — " + art : ""),
-          badge: { icon: playing ? "mdi:pause" : "mdi:play", tint: "teal", click: e },
+          tint: "var(--ember-teal)",
+          badge: { icon: playing ? "mdi:pause" : "mdi:play", onClick: () => this.call("media_player", "media_play_pause", e) },
         });
       });
-    if (!items.length) {
-      const up = Object.keys(hass.states).filter(
-        (e) => e.startsWith("update.") && hass.states[e].state === "on"
-      ).length;
-      if (up > 0)
-        items.push({
-          icon: "mdi:package-up",
-          tint: "warn",
-          label: "Maintenance",
-          value: `${up} update${up > 1 ? "s" : ""} available`,
-        });
+
+    // ── AMBIENT · low battery (≤ threshold, sustained 60 min, release > 20 %) ──
+    const bthr = cfg.battery_threshold ?? 15;
+    const low = Object.keys(hass.states)
+      .filter((e) => e.startsWith("sensor.") && e.endsWith("_battery"))
+      .map((e) => ({ e, v: num(s(e).state) }))
+      .filter((x): x is { e: string; v: number } => x.v != null)
+      .filter((x) => this.hold("bat:" + x.e, x.v <= bthr, x.v > 20, 3600000))
+      .sort((a, b) => a.v - b.v);
+    if (low.length) {
+      const worst = low[0];
+      const nm = (s(worst.e).attributes.friendly_name || worst.e).replace(/ battery$/i, "");
+      out.push({
+        tier: "ambient",
+        ambient: true,
+        icon: "mdi:battery-alert-variant-outline",
+        label: "Batteries",
+        value: low.length === 1 ? `${nm} — ${Math.round(worst.v)}%` : `${low.length} devices low — worst ${Math.round(worst.v)}%`,
+        tint: "var(--ember-warn)",
+        badge: low.length > 1 ? { text: String(low.length) } : undefined,
+        onTap: () => this.moreInfo(worst.e),
+      });
     }
-    if (!items.length)
-      items.push({
-        icon: "mdi:check-circle-outline",
-        tint: "good",
-        label: "All clear",
-        value: "Nothing needs you right now",
+
+    // ── AMBIENT · updates ──
+    const up = Object.keys(hass.states).filter((e) => e.startsWith("update.") && s(e).state === "on").length;
+    if (up > 0) {
+      out.push({
+        tier: "ambient",
+        ambient: true,
+        icon: "mdi:package-up",
+        label: "Maintenance",
+        value: `${up} update${up > 1 ? "s" : ""} available`,
+        tint: "var(--secondary-text-color)",
+        badge: up > 1 ? { text: String(up) } : undefined,
+        onTap: () => this.navigate("/config/updates"),
       });
-    return items.slice(0, 2);
+    }
+
+    return out;
   }
 
-  private playPause(e: Event, entity: string): void {
-    e.stopPropagation();
-    this.hass?.callService("media_player", "media_play_pause", { entity_id: entity });
+  private chipStyle(it: Item): string {
+    if (it.ambient) return `background:#1f2126`;
+    return `background:color-mix(in srgb, ${it.tint} 14%, transparent)`;
   }
 
-  private renderItem(it: Item): TemplateResult {
-    const [fg, bg] = TINT[it.tint];
-    const badge = it.badge;
+  private renderRow(it: Item): TemplateResult {
+    const b = it.badge;
     return html`
-      <div class="item">
-        <span class="chip" style="background:${bg};color:${fg}">
-          <ha-icon icon=${it.icon}></ha-icon>
+      <div
+        class="item ${it.tier} ${it.onTap ? "tap" : ""}"
+        style="--rt:${it.tint}"
+        @click=${it.onTap ?? nothing}
+      >
+        <span class="chip" style=${this.chipStyle(it)}>
+          <ha-icon icon=${it.icon} style="color:${it.ambient ? it.tint : it.tint}"></ha-icon>
         </span>
         <span class="info">
           <div class="lbl">${it.label}</div>
           <div class="val">${it.value}</div>
-          ${it.bar != null
-            ? html`<div class="bar"><i style="width:${it.bar}%"></i></div>`
-            : nothing}
+          ${it.bar != null ? html`<div class="bar"><i style="width:${it.bar}%"></i></div>` : nothing}
         </span>
-        ${badge
+        ${b
           ? html`<span
-              class="badge ${badge.click ? "click" : ""}"
-              style="color:${TINT[badge.tint][0]};background:${TINT[badge.tint][1]}"
-              @click=${badge.click ? (ev: Event) => this.playPause(ev, badge.click!) : undefined}
-              >${badge.icon ? html`<ha-icon icon=${badge.icon}></ha-icon>` : badge.text}</span
+              class="badge ${b.pill ? "pill" : ""} ${b.onClick ? "click" : ""}"
+              style=${b.pill
+                ? `color:${it.tint};background:color-mix(in srgb, ${it.tint} 14%, transparent);border-color:color-mix(in srgb, ${it.tint} 38%, transparent)`
+                : `color:${it.tint};background:color-mix(in srgb, ${it.tint} 14%, transparent)`}
+              @click=${b.onClick
+                ? (e: Event) => {
+                    e.stopPropagation();
+                    b.onClick!();
+                  }
+                : nothing}
+              >${b.icon ? html`<ha-icon icon=${b.icon}></ha-icon>` : b.text}</span
             >`
           : nothing}
       </div>
     `;
   }
 
+  private renderCalm(): TemplateResult {
+    const co2 = num(this.hass?.states[this.config?.air?.co2 ?? D.co2]?.state);
+    return html`
+      <div class="calm">
+        <span class="chip" style="background:#1f2126"><ha-icon icon="mdi:check"></ha-icon></span>
+        <span class="info">
+          <div class="lbl">All clear</div>
+          <div class="val">Nothing needs you</div>
+        </span>
+        ${co2 != null ? html`<span class="badge">AIR ${Math.round(co2)} PPM</span>` : nothing}
+      </div>
+    `;
+  }
+
   render(): TemplateResult | typeof nothing {
     if (!this.config) return nothing;
-    return html`<ha-card>${this.items().map((it) => this.renderItem(it))}</ha-card>`;
+    const items = this.items();
+    if (!items.length) return html`<ha-card>${this.renderCalm()}</ha-card>`;
+    const max = this.config.max_items ?? 2;
+    const shown = items.slice(0, max);
+    const rest = items.slice(max);
+    return html`
+      <ha-card>
+        ${shown.map((it) => this.renderRow(it))}
+        ${rest.length
+          ? html`<div class="more">
+              <span>+${rest.length}</span>
+              ${rest.map(
+                (it) => html`<span class="m"><span class="d" style="background:${it.tint}"></span>${it.label}</span>`
+              )}
+            </div>`
+          : nothing}
+      </ha-card>
+    `;
   }
 }
 
@@ -275,7 +532,7 @@ if (!customElements.get("ember-actionables")) {
   (window.customCards = window.customCards || []).push({
     type: "ember-actionables",
     name: "Ember Actionables",
-    description: "Dynamic 'what needs me now' — washer / music / timer / updates",
+    description: "Tiered 'what needs me now' — alert / active / ambient",
     preview: true,
   });
 }
