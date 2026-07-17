@@ -5,15 +5,22 @@ import type { HomeAssistant } from "custom-card-helpers";
 export interface EntityRow {
   entity: string;
   name?: string;
+  [k: string]: unknown;
 }
 
-// Reusable "entity + label" list editor (the piece the whole library leans on).
-// One ha-form per row (grid: entity picker + text) so it reuses HA's own
-// selectors + lazy loading; add / remove / reorder around it.
+// Reusable list editor (the piece the whole library leans on). One ha-form per
+// row so it reuses HA's own selectors + lazy loading; add / remove / reorder
+// around it. Defaults to an "entity + pill name" row, but `rowSchema` / `newRow`
+// / `labels` let other cards (e.g. shortcuts: entity + name + icon + label)
+// reuse the exact same widget.
 export class EmberEntityRows extends LitElement {
   @property({ attribute: false }) hass?: HomeAssistant;
   @property({ attribute: false }) rows: EntityRow[] = [];
   @property({ attribute: false }) domains: string[] = ["light", "switch"];
+  @property({ attribute: false }) rowSchema?: unknown[];
+  @property({ attribute: false }) newRow?: EntityRow;
+  @property({ attribute: false }) labels?: Record<string, string>;
+  @property() addLabel = "+ Add light";
 
   static styles = css`
     .row {
@@ -65,20 +72,23 @@ export class EmberEntityRows extends LitElement {
   `;
 
   private schema() {
-    return [
-      {
-        type: "grid",
-        column_min_width: "120px",
-        schema: [
-          { name: "entity", selector: { entity: { domain: this.domains } } },
-          { name: "name", selector: { text: {} } },
-        ],
-      },
-    ];
+    return (
+      this.rowSchema ?? [
+        {
+          type: "grid",
+          column_min_width: "120px",
+          schema: [
+            { name: "entity", selector: { entity: { domain: this.domains } } },
+            { name: "name", selector: { text: {} } },
+          ],
+        },
+      ]
+    );
   }
 
   private label = (s: { name: string }) =>
-    s.name === "entity" ? "Light / switch" : "Pill name";
+    this.labels?.[s.name] ??
+    (s.name === "entity" ? "Light / switch" : "Pill name");
 
   private emit(rows: EntityRow[]): void {
     this.dispatchEvent(
@@ -102,7 +112,7 @@ export class EmberEntityRows extends LitElement {
   }
 
   private add(): void {
-    this.emit([...this.rows, { entity: "", name: "" }]);
+    this.emit([...this.rows, { ...(this.newRow ?? { entity: "", name: "" }) }]);
   }
 
   private move(i: number, d: number): void {
@@ -149,7 +159,7 @@ export class EmberEntityRows extends LitElement {
           </div>
         `
       )}
-      <button class="add" @click=${() => this.add()}>+ Add light</button>
+      <button class="add" @click=${() => this.add()}>${this.addLabel}</button>
     `;
   }
 }
