@@ -15,7 +15,7 @@ import "./cards/ember-air";
 import "./cards/ember-climate-strip";
 import "./cards/ember-statistics-card";
 
-export const VERSION = "0.0.8";
+export const VERSION = "0.0.9";
 
 declare global {
   interface Window {

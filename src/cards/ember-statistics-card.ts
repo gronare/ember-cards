@@ -22,6 +22,8 @@ export interface EmberStatisticsCardConfig extends LovelaceCardConfig {
   color?: string; // "amber" | "teal" | "green" | hex; default "amber"
   stats?: StatKey[]; // footer chips
   show_period_selector?: boolean; // default true
+  reference?: "today" | "yesterday"; // window end; default "today". Yesterday
+  // shifts the whole window back a day (for providers whose "today" lags).
 }
 
 // --- HA statistics WS shapes (not in custom-card-helpers) --------------------
@@ -75,6 +77,7 @@ export class EmberStatisticsCard extends LitElement implements LovelaceCard {
   @state() private meta?: StatMeta | null; // undefined = not fetched, null = fetched/not found
   @state() private rows?: StatRow[]; // undefined = not fetched
   @state() private range: RangeKey = "month";
+  @state() private ref: "today" | "yesterday" = "today";
   @state() private chartWidth = 0;
   @state() private tip?: { x: number; y: number; label: string; text: string };
 
@@ -109,8 +112,16 @@ export class EmberStatisticsCard extends LitElement implements LovelaceCard {
         letter-spacing: -0.01em;
         color: var(--primary-text-color);
       }
-      .chips {
+      .controls {
         margin-left: auto;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+      }
+      .seg,
+      .chips {
         display: flex;
         gap: 4px;
         flex-wrap: wrap;
@@ -256,6 +267,7 @@ export class EmberStatisticsCard extends LitElement implements LovelaceCard {
     }
     this.config = config;
     this.range = this.defaultRange(config);
+    this.ref = config.reference ?? "today";
   }
 
   getCardSize(): number {
@@ -320,13 +332,23 @@ export class EmberStatisticsCard extends LitElement implements LovelaceCard {
     }
   }
 
+  private get offsetDays(): number {
+    return this.ref === "yesterday" ? 1 : 0;
+  }
+
   private effectiveRange(): { period: StatPeriod; days: number; cap: string } {
+    let base: { period: StatPeriod; days: number; cap: string };
     if (this.config?.show_period_selector === false) {
       const period = this.config.period ?? "day";
       const days = this.config.days ?? 30;
-      return { period, days, cap: this.capFor(period, days) };
+      base = { period, days, cap: this.capFor(period, days) };
+    } else {
+      base = { ...RANGES[this.range] }; // copy — never mutate the shared const
     }
-    return RANGES[this.range];
+    if (this.offsetDays > 0) {
+      base.cap = base.period === "hour" ? "Yesterday · 24 h" : `${base.cap} · to yesterday`;
+    }
+    return base;
   }
 
   private capFor(period: StatPeriod, days: number): string {
@@ -346,10 +368,11 @@ export class EmberStatisticsCard extends LitElement implements LovelaceCard {
     }
 
     const { period, days } = this.effectiveRange();
-    const key = `${statId}|${period}|${days}`;
+    const offset = this.offsetDays;
+    const key = `${statId}|${period}|${days}|${offset}`;
     if (this.seriesKey !== key) {
       this.seriesKey = key;
-      void this.fetchSeries(statId, period, days, hass);
+      void this.fetchSeries(statId, period, days, offset, hass);
     }
   }
 
@@ -368,10 +391,11 @@ export class EmberStatisticsCard extends LitElement implements LovelaceCard {
     statId: string,
     period: StatPeriod,
     days: number,
+    offset: number,
     hass: HassWS
   ): Promise<void> {
-    const key = `${statId}|${period}|${days}`;
-    const end = new Date();
+    const key = `${statId}|${period}|${days}|${offset}`;
+    const end = new Date(Date.now() - offset * DAY_MS);
     const start = new Date(end.getTime() - days * DAY_MS);
     try {
       const res = await hass.callWS<Record<string, StatRow[]>>({
@@ -488,6 +512,10 @@ export class EmberStatisticsCard extends LitElement implements LovelaceCard {
     this.range = r; // updated() → maybeFetch() refetches for the new window
   }
 
+  private pickRef(r: "today" | "yesterday"): void {
+    this.ref = r; // updated() → maybeFetch() refetches with the new offset
+  }
+
   private showTip(x: number, y: number, label: string, value: number): void {
     this.tip = { x, y, label, text: `${fmt(value, this.dp)}${this.unit ? " " + this.unit : ""}` };
   }
@@ -514,16 +542,29 @@ export class EmberStatisticsCard extends LitElement implements LovelaceCard {
           <ha-icon .icon=${icon}></ha-icon>
           <span class="title">${title}</span>
           ${showChips
-            ? html`<div class="chips">
-                ${(["day", "week", "month", "year"] as RangeKey[]).map(
-                  (r) => html`<button
-                    class="chip"
-                    aria-pressed=${this.range === r ? "true" : "false"}
-                    @click=${() => this.pickRange(r)}
-                  >
-                    ${r}
-                  </button>`
-                )}
+            ? html`<div class="controls">
+                <div class="seg">
+                  ${(["today", "yesterday"] as const).map(
+                    (r) => html`<button
+                      class="chip"
+                      aria-pressed=${this.ref === r ? "true" : "false"}
+                      @click=${() => this.pickRef(r)}
+                    >
+                      ${r}
+                    </button>`
+                  )}
+                </div>
+                <div class="chips">
+                  ${(["day", "week", "month", "year"] as RangeKey[]).map(
+                    (r) => html`<button
+                      class="chip"
+                      aria-pressed=${this.range === r ? "true" : "false"}
+                      @click=${() => this.pickRange(r)}
+                    >
+                      ${r}
+                    </button>`
+                  )}
+                </div>
               </div>`
             : nothing}
         </div>

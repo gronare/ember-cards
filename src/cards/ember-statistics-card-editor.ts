@@ -14,6 +14,7 @@ const LABELS: Record<string, string> = {
   days: "Days back",
   color: "Colour",
   stats: "Footer stats",
+  reference: "Reference (today / yesterday)",
   show_period_selector: "Show period selector",
 };
 
@@ -119,7 +120,19 @@ export class EmberStatisticsCardEditor extends LitElement {
           true
         ),
       },
-      { name: "show_period_selector", selector: { boolean: {} } },
+      {
+        type: "grid",
+        schema: [
+          {
+            name: "reference",
+            selector: sel([
+              { value: "today", label: "Today" },
+              { value: "yesterday", label: "Yesterday" },
+            ]),
+          },
+          { name: "show_period_selector", selector: { boolean: {} } },
+        ],
+      },
     ];
   }
 
