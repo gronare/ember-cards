@@ -7,9 +7,9 @@
 // Cards are added here as they are built:
 import "./cards/ember-room-card";
 import "./cards/ember-shortcuts-row";
-//   import "./cards/ember-climate-card";
+import "./cards/ember-climate-card";
 
-export const VERSION = "0.0.4";
+export const VERSION = "0.0.5";
 
 declare global {
   interface Window {
