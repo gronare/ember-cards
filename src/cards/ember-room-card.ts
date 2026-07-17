@@ -3,6 +3,7 @@ import { property, state } from "lit/decorators.js";
 import type { HomeAssistant, LovelaceCard, LovelaceCardConfig } from "custom-card-helpers";
 import { emberTokens, emberCard } from "../shared/theme";
 import { areaLights } from "../shared/hass";
+import "./ember-room-card-editor";
 
 export interface Preset {
   entity: string;
@@ -195,6 +196,10 @@ export class EmberRoomCard extends LitElement implements LovelaceCard {
 
   getCardSize(): number {
     return 4;
+  }
+
+  static getConfigElement(): HTMLElement {
+    return document.createElement("ember-room-card-editor");
   }
 
   static getStubConfig(): Omit<EmberRoomCardConfig, "type"> {
