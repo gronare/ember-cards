@@ -15,6 +15,7 @@ interface Item {
 
 export interface EmberActionablesConfig extends LovelaceCardConfig {
   washer?: { status?: string; remaining?: string; total?: string; operation?: string; name?: string };
+  paused_grace?: number; // minutes a paused media stays with a resume button; default 45
 }
 
 const WASH_ON = ["run", "running", "wash", "washing", "rinse", "rinsing", "spin", "spinning", "drying", "steam"];
@@ -141,6 +142,23 @@ export class EmberActionables extends LitElement implements LovelaceCard {
     const hass = this.hass;
     if (!hass) return [];
     const items: Item[] = [];
+    // Actionable, time-bound items first: active timers, then the washer.
+    Object.keys(hass.states)
+      .filter((e) => e.startsWith("timer.") && hass.states[e].state === "active")
+      .forEach((e) => {
+        const tm = hass.states[e];
+        const fin = tm.attributes.finishes_at
+          ? Math.max(0, Math.round((new Date(tm.attributes.finishes_at).getTime() - Date.now()) / 60000))
+          : null;
+        items.push({
+          icon: "mdi:timer-outline",
+          tint: "warn",
+          label: "Timer",
+          value: html`${tm.attributes.friendly_name || e}${fin != null
+            ? html` — <b style="color:var(--ember-warn)">${fin} min</b> left`
+            : ""}`,
+        });
+      });
     const w = this.config?.washer ?? {};
     const statusE = w.status ?? "sensor.wall_e_current_status";
     const ws = hass.states[statusE];
@@ -165,36 +183,31 @@ export class EmberActionables extends LitElement implements LovelaceCard {
         badge: { text: "RUNNING", tint: "teal" },
       });
     }
+    // Media last (passive): playing (tap to pause), then recently-paused within
+    // the grace window (tap to resume). Drops on idle/off/stop or when grace
+    // elapses, or when bumped out of the 2 slots by the items above.
+    const graceMs = (this.config?.paused_grace ?? 45) * 60000;
     Object.keys(hass.states)
-      .filter((e) => e.startsWith("media_player.") && hass.states[e].state === "playing")
+      .filter((e) => e.startsWith("media_player."))
+      .map((e) => ({ e, s: hass.states[e] }))
+      .filter(
+        ({ s }) =>
+          s.state === "playing" ||
+          (s.state === "paused" && Date.now() - Date.parse(s.last_changed) < graceMs)
+      )
+      .sort((a, b) => (a.s.state === "playing" ? 0 : 1) - (b.s.state === "playing" ? 0 : 1))
       .slice(0, 2)
-      .forEach((e) => {
-        const m = hass.states[e];
-        const t = m.attributes.media_title || "Playing";
-        const art = m.attributes.media_artist || m.attributes.app_name || "";
-        const nm = m.attributes.friendly_name || e.split(".")[1];
+      .forEach(({ e, s }) => {
+        const playing = s.state === "playing";
+        const t = s.attributes.media_title || (playing ? "Playing" : "Paused");
+        const art = s.attributes.media_artist || s.attributes.app_name || "";
+        const nm = s.attributes.friendly_name || e.split(".")[1];
         items.push({
           icon: "mdi:music-note",
           tint: "teal",
-          label: "Now playing · " + nm,
+          label: (playing ? "Now playing · " : "Paused · ") + nm,
           value: t + (art ? " — " + art : ""),
-          badge: { icon: "mdi:pause", tint: "teal", click: e },
-        });
-      });
-    Object.keys(hass.states)
-      .filter((e) => e.startsWith("timer.") && hass.states[e].state === "active")
-      .forEach((e) => {
-        const tm = hass.states[e];
-        const fin = tm.attributes.finishes_at
-          ? Math.max(0, Math.round((new Date(tm.attributes.finishes_at).getTime() - Date.now()) / 60000))
-          : null;
-        items.push({
-          icon: "mdi:timer-outline",
-          tint: "warn",
-          label: "Timer",
-          value: html`${tm.attributes.friendly_name || e}${fin != null
-            ? html` — <b style="color:var(--ember-warn)">${fin} min</b> left`
-            : ""}`,
+          badge: { icon: playing ? "mdi:pause" : "mdi:play", tint: "teal", click: e },
         });
       });
     if (!items.length) {
