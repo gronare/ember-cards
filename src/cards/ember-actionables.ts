@@ -10,7 +10,7 @@ interface Item {
   label: string;
   value: TemplateResult | string;
   bar?: number;
-  badge?: { text: string; tint: Tint; click?: string };
+  badge?: { text?: string; icon?: string; tint: Tint; click?: string };
 }
 
 export interface EmberActionablesConfig extends LovelaceCardConfig {
@@ -102,9 +102,18 @@ export class EmberActionables extends LitElement implements LovelaceCard {
         border-radius: 7px;
         letter-spacing: 0.02em;
         flex: none;
+        display: inline-flex;
+        align-items: center;
+      }
+      .badge ha-icon {
+        --mdc-icon-size: 20px;
+        display: block;
       }
       .badge.click {
         cursor: pointer;
+      }
+      .badge.click:hover {
+        filter: brightness(1.15);
       }
     `,
   ];
@@ -169,7 +178,7 @@ export class EmberActionables extends LitElement implements LovelaceCard {
           tint: "teal",
           label: "Now playing · " + nm,
           value: t + (art ? " — " + art : ""),
-          badge: { text: "▶", tint: "teal", click: e },
+          badge: { icon: "mdi:pause", tint: "teal", click: e },
         });
       });
     Object.keys(hass.states)
@@ -234,8 +243,8 @@ export class EmberActionables extends LitElement implements LovelaceCard {
           ? html`<span
               class="badge ${badge.click ? "click" : ""}"
               style="color:${TINT[badge.tint][0]};background:${TINT[badge.tint][1]}"
-              @click=${badge.click ? (ev: Event) => this.playPause(ev, badge.click!) : nothing}
-              >${badge.text}</span
+              @click=${badge.click ? (ev: Event) => this.playPause(ev, badge.click!) : undefined}
+              >${badge.icon ? html`<ha-icon icon=${badge.icon}></ha-icon>` : badge.text}</span
             >`
           : nothing}
       </div>

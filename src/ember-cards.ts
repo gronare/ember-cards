@@ -18,7 +18,7 @@ import "./cards/ember-statistics-card";
 import "./cards/ember-metric";
 import "./cards/ember-current-draw";
 
-export const VERSION = "0.0.13";
+export const VERSION = "0.0.14";
 
 declare global {
   interface Window {
