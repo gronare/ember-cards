@@ -20,7 +20,16 @@ export interface EmberActionablesConfig extends LovelaceCardConfig {
   max_items?: number; // default 2
   paused_grace?: number; // minutes a paused media stays with a resume button; default 45
   battery_threshold?: number; // default 15
-  washer?: { status?: string; remaining?: string; total?: string; operation?: string; name?: string; unload?: string };
+  washer?: {
+    status?: string;
+    remaining?: string;
+    total?: string;
+    operation?: string;
+    name?: string;
+    unload?: string;
+    cycles?: string; // cycle counter that resets on the drum-clean program
+    clean_after?: number; // cycles-since-clean that triggers the reminder; default 30
+  };
   air?: { co2?: string; pm25?: string; category?: string };
   health?: { zigbee?: string; coordinator_eth?: string; coordinator_net?: string; bt_proxy?: string; navigate?: string };
   lock?: { entity?: string; persons?: string[] };
@@ -408,6 +417,22 @@ export class EmberActionables extends LitElement implements LovelaceCard {
           badge: { icon: playing ? "mdi:pause" : "mdi:play", onClick: () => this.call("media_player", "media_play_pause", e) },
         });
       });
+
+    // ── AMBIENT · clean the drum (cycles counter resets on the clean program) ──
+    const cycE = cfg.washer?.cycles ?? "sensor.wall_e_cycles";
+    const cyc = num(s(cycE)?.state);
+    const cleanAfter = cfg.washer?.clean_after ?? 30;
+    if (cyc != null && cyc >= cleanAfter) {
+      out.push({
+        tier: "ambient",
+        ambient: true,
+        icon: "mdi:washing-machine",
+        label: "Washer",
+        value: `Clean the drum — ${Math.round(cyc)} washes`,
+        tint: "var(--ember-warn)",
+        onTap: () => this.moreInfo(cycE),
+      });
+    }
 
     // ── AMBIENT · low battery (≤ threshold, sustained 60 min, release > 20 %) ──
     const bthr = cfg.battery_threshold ?? 15;
