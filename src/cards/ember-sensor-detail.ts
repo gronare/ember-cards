@@ -73,6 +73,8 @@ export class EmberSensorDetail extends LitElement implements LovelaceCard {
         inset: 0;
         z-index: 8;
         background: rgba(0, 0, 0, 0.55);
+        backdrop-filter: blur(4px);
+        -webkit-backdrop-filter: blur(4px);
         display: flex;
         align-items: flex-start;
         justify-content: center;

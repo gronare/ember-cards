@@ -103,6 +103,8 @@ export class EmberRoomDetail extends LitElement implements LovelaceCard {
         inset: 0;
         z-index: 8;
         background: rgba(0, 0, 0, 0.55);
+        backdrop-filter: blur(4px);
+        -webkit-backdrop-filter: blur(4px);
         display: flex;
         align-items: flex-start;
         justify-content: center;
@@ -167,6 +169,10 @@ export class EmberRoomDetail extends LitElement implements LovelaceCard {
       .lamp {
         display: flex;
         flex-direction: column;
+        transition: opacity 0.18s ease;
+      }
+      .lamp.dim {
+        opacity: 0.32;
       }
       .lrow {
         position: relative;
@@ -600,7 +606,7 @@ export class EmberRoomDetail extends LitElement implements LovelaceCard {
     const chipBg = on && c ? rgba(c, 0.16) : "rgba(127,140,150,0.12)";
     const iconCol = on && c ? rgb(c) : "var(--secondary-text-color)";
     return html`
-      <div class="lamp">
+      <div class="lamp ${this.expanded && this.expanded !== entity ? "dim" : ""}">
         <div
           class="lrow"
           @pointerdown=${(e: PointerEvent) => this.rowDown(e, entity, false)}
@@ -629,7 +635,7 @@ export class EmberRoomDetail extends LitElement implements LovelaceCard {
     const anyOn = lit.length > 0;
     const avg = anyOn ? Math.round(lit.reduce((a, e) => a + this.briLive(e), 0) / lit.length) : 0;
     return html`
-      <div class="lamp full">
+      <div class="lamp full ${this.expanded ? "dim" : ""}">
         <div
           class="lrow master ${anyOn ? "on" : ""}"
           @pointerdown=${(e: PointerEvent) => this.rowDown(e, "", true)}
