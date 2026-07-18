@@ -34,6 +34,7 @@ export interface EmberRoomCardConfig extends LovelaceCardConfig {
   show_speaker?: boolean;
   speaker_entity?: string;
   speaker_name?: string;
+  exclude?: string[]; // area lights to omit from count + master toggle (e.g. a door light)
 }
 
 const num = (v: string | undefined, d = 1): string =>
@@ -212,7 +213,8 @@ export class EmberRoomCard extends LitElement implements LovelaceCard {
 
   private lights(): { on: number; total: number } {
     if (!this.hass || !this.config) return { on: 0, total: 0 };
-    const ls = areaLights(this.hass, this.config.area);
+    const ex = this.config.exclude ?? [];
+    const ls = areaLights(this.hass, this.config.area).filter((e) => !ex.includes(e));
     const on = ls.filter((e) => this.hass!.states[e]?.state === "on").length;
     return { on, total: ls.length };
   }
@@ -225,6 +227,7 @@ export class EmberRoomCard extends LitElement implements LovelaceCard {
     e.stopPropagation();
     this.hass?.callService("script", "area_lights_master_toggle", {
       area: this.config!.area,
+      exclude: this.config!.exclude ?? [],
     });
   }
 

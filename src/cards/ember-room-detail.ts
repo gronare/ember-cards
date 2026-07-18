@@ -11,6 +11,7 @@ export interface EmberRoomDetailConfig extends LovelaceCardConfig {
   icon?: string;
   area?: string;
   entities?: string[];
+  exclude?: string[]; // omit from the auto-listed area lights
 }
 
 type Tier = "bright" | "white" | "colour";
@@ -433,8 +434,9 @@ export class EmberRoomDetail extends LitElement implements LovelaceCard {
     return this.hass?.states[e];
   }
   private lights(): string[] {
-    if (this.config?.entities?.length) return this.config.entities;
-    if (this.hass && this.config?.area) return areaLights(this.hass, this.config.area).sort();
+    const ex = this.config?.exclude ?? [];
+    if (this.config?.entities?.length) return this.config.entities.filter((e) => !ex.includes(e));
+    if (this.hass && this.config?.area) return areaLights(this.hass, this.config.area).filter((e) => !ex.includes(e)).sort();
     return [];
   }
   private displayName(entity: string): string {
