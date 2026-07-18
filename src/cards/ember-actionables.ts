@@ -422,7 +422,7 @@ export class EmberActionables extends LitElement implements LovelaceCard {
     }
     active
       .filter((x) => !drop.has(x.e))
-      .sort((a, b) => (a.st.state === "playing" ? 0 : 1) - (b.st.state === "playing" ? 0 : 1))
+      .sort((a, b) => a.e.localeCompare(b.e)) // stable order — never reshuffle on play/pause
       .slice(0, 2)
       .forEach(({ e, st }) => {
         const playing = st.state === "playing";
@@ -435,7 +435,9 @@ export class EmberActionables extends LitElement implements LovelaceCard {
           label: (playing ? "Now playing · " : "Paused · ") + nm,
           value: t + (art ? " — " + art : ""),
           tint: "var(--ember-teal)",
-          badge: { icon: playing ? "mdi:pause" : "mdi:play", onClick: () => this.call("media_player", "media_play_pause", e) },
+          // explicit pause/play by state — more reliable than the toggle on some
+          // Apple TV apps (SVT Play etc.)
+          badge: { icon: playing ? "mdi:pause" : "mdi:play", onClick: () => this.call("media_player", playing ? "media_pause" : "media_play", e) },
         });
       });
 
