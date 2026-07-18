@@ -130,7 +130,7 @@ export class EmberRoomDetail extends LitElement implements LovelaceCard {
         background: rgba(127, 140, 150, 0.18);
         overflow: hidden;
         cursor: pointer;
-        touch-action: none;
+        touch-action: pan-y;
       }
       .fill {
         height: 100%;
@@ -226,20 +226,42 @@ export class EmberRoomDetail extends LitElement implements LovelaceCard {
     const r = el.getBoundingClientRect();
     return Math.max(0, Math.min(100, Math.round(((ev.clientX - r.left) / r.width) * 100)));
   }
+  private setBrightness(entity: string, pct: number): void {
+    this.hass?.callService("light", "turn_on", { entity_id: entity, brightness_pct: Math.round(pct) });
+  }
+  // gesture: don't touch the light until it's clearly a horizontal drag, so a
+  // vertical scroll that starts on a track never changes brightness. `touch-
+  // action: pan-y` lets the list scroll; we only claim horizontal moves.
+  private g: { entity: string; sx: number; sliding: boolean; last: number } | null = null;
   private down(ev: PointerEvent, entity: string): void {
-    ev.stopPropagation();
-    (ev.currentTarget as HTMLElement).setPointerCapture(ev.pointerId);
-    this.drag = { entity, pct: this.pctFrom(ev) };
+    this.g = { entity, sx: ev.clientX, sliding: false, last: 0 };
   }
   private move(ev: PointerEvent, entity: string): void {
-    if (this.drag?.entity !== entity) return;
-    this.drag = { entity, pct: this.pctFrom(ev) };
+    const g = this.g;
+    if (!g || g.entity !== entity) return;
+    if (!g.sliding) {
+      if (Math.abs(ev.clientX - g.sx) < 6) return; // not yet a horizontal drag
+      g.sliding = true;
+      (ev.currentTarget as HTMLElement).setPointerCapture(ev.pointerId);
+    }
+    const pct = this.pctFrom(ev);
+    this.drag = { entity, pct };
+    const now = Date.now();
+    if (now - g.last > 120) {
+      g.last = now;
+      this.setBrightness(entity, pct); // live update while dragging
+    }
   }
   private up(ev: PointerEvent, entity: string): void {
-    if (this.drag?.entity !== entity) return;
-    const pct = this.pctFrom(ev);
+    const g = this.g;
+    this.g = null;
+    if (!g || g.entity !== entity || !g.sliding) return; // a tap does nothing
+    this.setBrightness(entity, this.pctFrom(ev));
     this.drag = null;
-    this.hass?.callService("light", "turn_on", { entity_id: entity, brightness_pct: pct });
+  }
+  private cancel(): void {
+    this.g = null;
+    this.drag = null;
   }
 
   private row(entity: string): TemplateResult {
@@ -271,6 +293,7 @@ export class EmberRoomDetail extends LitElement implements LovelaceCard {
               @pointerdown=${(e: PointerEvent) => this.down(e, entity)}
               @pointermove=${(e: PointerEvent) => this.move(e, entity)}
               @pointerup=${(e: PointerEvent) => this.up(e, entity)}
+              @pointercancel=${() => this.cancel()}
             >
               <div class="fill" style="width:${p}%"></div>
             </div>`
