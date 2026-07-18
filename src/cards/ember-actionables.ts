@@ -20,6 +20,12 @@ export interface EmberActionablesConfig extends LovelaceCardConfig {
   max_items?: number; // default 2
   paused_grace?: number; // minutes a paused media stays with a resume button; default 45
   battery_threshold?: number; // default 15
+  media?: {
+    // each group = media_players that share ONE screen (e.g. Apple TV + the LG
+    // TV + the Sonos playing TV audio). When >1 in a group is active, only the
+    // "best" (real content / app title over a generic source like "TV") shows.
+    groups?: string[][];
+  };
   washer?: {
     status?: string;
     remaining?: string;
@@ -397,10 +403,25 @@ export class EmberActionables extends LitElement implements LovelaceCard {
 
     // ── ACTIVE · media (playing → recently-paused within grace) ──
     const graceMs = (cfg.paused_grace ?? 45) * 60000;
-    Object.keys(hass.states)
+    const GENERIC = new Set(["TV", "Live TV", "HDMI", "Playing"]);
+    const active = Object.keys(hass.states)
       .filter((e) => e.startsWith("media_player."))
       .map((e) => ({ e, st: s(e) }))
-      .filter(({ st }) => st.state === "playing" || (st.state === "paused" && Date.now() - Date.parse(st.last_changed) < graceMs))
+      .filter(({ st }) => st.state === "playing" || (st.state === "paused" && Date.now() - Date.parse(st.last_changed) < graceMs));
+    // collapse each screen-group to its best-content member (Apple TV > "TV")
+    const rich = (x: { st: { attributes: Record<string, string> } }): boolean => {
+      const a = x.st.attributes;
+      return !!a.app_name || (!!a.media_title && a.media_title !== a.source && !GENERIC.has(a.media_title));
+    };
+    const drop = new Set<string>();
+    for (const grp of this.config?.media?.groups ?? []) {
+      const members = active.filter((x) => grp.includes(x.e)).sort((a, b) => grp.indexOf(a.e) - grp.indexOf(b.e));
+      if (members.length <= 1) continue;
+      const pick = members.find(rich) ?? members[0];
+      members.forEach((x) => x.e !== pick.e && drop.add(x.e));
+    }
+    active
+      .filter((x) => !drop.has(x.e))
       .sort((a, b) => (a.st.state === "playing" ? 0 : 1) - (b.st.state === "playing" ? 0 : 1))
       .slice(0, 2)
       .forEach(({ e, st }) => {
