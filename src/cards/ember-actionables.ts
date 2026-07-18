@@ -138,8 +138,31 @@ export class EmberActionables extends LitElement implements LovelaceCard {
         color: var(--primary-text-color);
         margin-top: 2px;
         overflow: hidden;
-        text-overflow: ellipsis;
         white-space: nowrap;
+      }
+      .val .rolltext {
+        display: inline-block;
+      }
+      .val.marquee .rolltext {
+        animation: ember-roll var(--rolldur, 12s) linear infinite;
+      }
+      @keyframes ember-roll {
+        0%,
+        8% {
+          transform: translateX(0);
+        }
+        92%,
+        100% {
+          transform: translateX(var(--roll, 0));
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .val.marquee .rolltext {
+          animation: none;
+        }
+        .val {
+          text-overflow: ellipsis;
+        }
       }
       .bar {
         height: 4px;
@@ -242,6 +265,23 @@ export class EmberActionables extends LitElement implements LovelaceCard {
   disconnectedCallback(): void {
     super.disconnectedCallback();
     if (this.timer) clearInterval(this.timer);
+  }
+
+  // marquee any value line that overflows its row (long titles on narrow phones)
+  updated(): void {
+    this.renderRoot.querySelectorAll<HTMLElement>(".val").forEach((el) => {
+      const inner = el.querySelector<HTMLElement>(".rolltext");
+      if (!inner) return;
+      const overflow = inner.scrollWidth - el.clientWidth;
+      if (overflow > 4) {
+        el.style.setProperty("--roll", `-${overflow + 12}px`);
+        el.style.setProperty("--rolldur", `${Math.max(7, (overflow + 12) / 28)}s`);
+        el.classList.add("marquee");
+      } else {
+        el.classList.remove("marquee");
+        el.style.removeProperty("--roll");
+      }
+    });
   }
 
   // hysteresis + sustain: arm on `on`, release on `off`, hold in between;
@@ -516,7 +556,7 @@ export class EmberActionables extends LitElement implements LovelaceCard {
         </span>
         <span class="info">
           <div class="lbl">${it.label}</div>
-          <div class="val">${it.value}</div>
+          <div class="val"><span class="rolltext">${it.value}</span></div>
           ${it.bar != null ? html`<div class="bar"><i style="width:${it.bar}%"></i></div>` : nothing}
         </span>
         ${b
