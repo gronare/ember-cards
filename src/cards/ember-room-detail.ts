@@ -73,6 +73,8 @@ export class EmberRoomDetail extends LitElement implements LovelaceCard {
   @state() private drag: { entity: string; pct: number } | null = null;
   @state() private expanded: string | null = null;
   @state() private seg: Record<string, "white" | "colour"> = {};
+  @state() private sPrev: { entity: string; kelvin?: number; hue?: number; sat?: number } | null = null;
+  private lastExpanded: string | null = null;
 
   private onHash = () => this.sync();
   private g: null | {
@@ -87,7 +89,7 @@ export class EmberRoomDetail extends LitElement implements LovelaceCard {
     startPct?: number;
     starts?: [string, number][];
   } = null;
-  private sg: null | { last: number; left: number; width: number; apply: (f: number) => void } = null;
+  private sg: null | { last: number; left: number; width: number; entity: string; kind: "kelvin" | "hue" | "sat"; a: number; b: number } = null;
 
   static styles = [
     emberTokens,
@@ -186,7 +188,6 @@ export class EmberRoomDetail extends LitElement implements LovelaceCard {
         bottom: 0;
         left: 0;
         background: rgba(127, 140, 150, 0.08);
-        transition: width 0.12s linear;
       }
       .row-content {
         position: relative;
@@ -403,6 +404,26 @@ export class EmberRoomDetail extends LitElement implements LovelaceCard {
     if (!open) this.expanded = null;
     this.open = open;
   }
+
+  updated(): void {
+    // scroll a newly-opened accordion fully into view (its bottom)
+    if (this.expanded && this.expanded !== this.lastExpanded) {
+      const acc = this.renderRoot?.querySelector?.(".acc") as HTMLElement | null;
+      acc?.scrollIntoView({ behavior: "smooth", block: "end" });
+    }
+    this.lastExpanded = this.expanded;
+    // hold the brightness preview until the light confirms (no release jump)
+    if (this.drag && !this.g && Math.abs(this.briPct(this.drag.entity) - this.drag.pct) <= 2) this.drag = null;
+    // hold the colour/warmth preview until confirmed
+    if (this.sPrev && !this.sg) {
+      const a = this.st(this.sPrev.entity)?.attributes ?? {};
+      const hs = Array.isArray(a.hs_color) ? a.hs_color : [0, 0];
+      const okK = this.sPrev.kelvin == null || Math.abs((a.color_temp_kelvin ?? 0) - this.sPrev.kelvin) <= 90;
+      const okH = this.sPrev.hue == null || Math.abs(hs[0] - this.sPrev.hue) <= 8;
+      const okS = this.sPrev.sat == null || Math.abs(hs[1] - this.sPrev.sat) <= 8;
+      if (okK && okH && okS) this.sPrev = null;
+    }
+  }
   private close(): void {
     if (window.location.hash === this.config?.hash) window.history.back();
     else this.sync();
@@ -438,6 +459,11 @@ export class EmberRoomDetail extends LitElement implements LovelaceCard {
     return this.drag?.entity === entity ? this.drag.pct : this.briPct(entity);
   }
   private lampRgb(entity: string): RGB | null {
+    const p = this.sPrev?.entity === entity ? this.sPrev : null;
+    if (p) {
+      if (p.kelvin != null) return kelvinToRgb(p.kelvin);
+      if (p.hue != null) return hsToRgb(p.hue, p.sat ?? 100);
+    }
     const s = this.st(entity);
     if (!s || s.state !== "on") return null;
     const c = s.attributes?.rgb_color;
@@ -450,6 +476,7 @@ export class EmberRoomDetail extends LitElement implements LovelaceCard {
   // ── services ──
   private toggle(e: Event, entity: string): void {
     e.stopPropagation();
+    if (this.st(entity)?.state === "on" && this.expanded === entity) this.expanded = null; // close on turn-off
     this.hass?.callService("light", "toggle", { entity_id: entity });
   }
   private setBri(entity: string, pct: number): void {
@@ -486,11 +513,11 @@ export class EmberRoomDetail extends LitElement implements LovelaceCard {
     const throttled = now - g.last > 120;
     if (throttled) g.last = now;
     if (g.kind === "row" && g.entity) {
-      const pct = Math.max(1, Math.min(100, (g.startPct ?? 0) + delta));
+      const pct = Math.round(Math.max(1, Math.min(100, (g.startPct ?? 0) + delta)));
       this.drag = { entity: g.entity, pct };
       if (throttled) this.setBri(g.entity, pct);
     } else if (g.kind === "master" && g.starts && throttled) {
-      g.starts.forEach(([e, start]) => this.setBri(e, Math.max(1, Math.min(100, start + delta))));
+      g.starts.forEach(([e, start]) => this.setBri(e, Math.round(Math.max(1, Math.min(100, start + delta)))));
     }
   }
   private rowUp(ev: PointerEvent): void {
@@ -500,10 +527,11 @@ export class EmberRoomDetail extends LitElement implements LovelaceCard {
     if (g.sliding) {
       const delta = ((ev.clientX - g.sx) / g.width) * 100;
       if (g.kind === "row" && g.entity) {
-        this.setBri(g.entity, Math.max(1, Math.min(100, (g.startPct ?? 0) + delta)));
-        this.drag = null;
+        const pct = Math.round(Math.max(1, Math.min(100, (g.startPct ?? 0) + delta)));
+        this.setBri(g.entity, pct);
+        this.drag = { entity: g.entity, pct }; // hold preview until confirmed (updated() clears)
       } else if (g.kind === "master" && g.starts) {
-        g.starts.forEach(([e, start]) => this.setBri(e, Math.max(1, Math.min(100, start + delta))));
+        g.starts.forEach(([e, start]) => this.setBri(e, Math.round(Math.max(1, Math.min(100, start + delta)))));
       }
       return;
     }
@@ -519,11 +547,11 @@ export class EmberRoomDetail extends LitElement implements LovelaceCard {
   }
 
   // ── free slider (absolute) ──
-  private slDown(ev: PointerEvent, apply: (f: number) => void): void {
+  private slDown(ev: PointerEvent, entity: string, kind: "kelvin" | "hue" | "sat", a: number, b: number): void {
     ev.stopPropagation();
     const r = (ev.currentTarget as HTMLElement).getBoundingClientRect();
     (ev.currentTarget as HTMLElement).setPointerCapture(ev.pointerId);
-    this.sg = { last: 0, left: r.left, width: r.width, apply };
+    this.sg = { last: 0, left: r.left, width: r.width, entity, kind, a, b };
     this.slApply(ev, true);
   }
   private slMove(ev: PointerEvent): void {
@@ -540,9 +568,21 @@ export class EmberRoomDetail extends LitElement implements LovelaceCard {
     if (!g) return;
     const f = Math.max(0, Math.min(1, (ev.clientX - g.left) / g.width));
     const now = Date.now();
-    if (force || now - g.last > 110) {
-      g.last = now;
-      g.apply(f);
+    const send = force || now - g.last > 220; // ease the service rate (Zigbee)
+    if (send) g.last = now;
+    // sPrev updates every move for a smooth thumb; service call is throttled
+    if (g.kind === "kelvin") {
+      const k = Math.round(g.a + f * (g.b - g.a));
+      this.sPrev = { entity: g.entity, kelvin: k };
+      if (send) this.setKelvin(g.entity, k);
+    } else if (g.kind === "hue") {
+      const h = Math.round(f * 360);
+      this.sPrev = { entity: g.entity, hue: h, sat: g.b };
+      if (send) this.setHs(g.entity, h, g.b);
+    } else {
+      const sat = Math.round(f * 100);
+      this.sPrev = { entity: g.entity, hue: g.a, sat };
+      if (send) this.setHs(g.entity, g.a, sat);
     }
   }
 
@@ -566,7 +606,7 @@ export class EmberRoomDetail extends LitElement implements LovelaceCard {
           @pointerup=${(e: PointerEvent) => this.rowUp(e)}
           @pointercancel=${() => (this.g = null)}
         >
-          <div class="fill" style="width:${on ? pct : 0}%;background:${fillBg};border-right:${edge}"></div>
+          <div class="fill" style="width:${on ? pct : 0}%;background:${fillBg};border-right:${edge};transition:${this.drag?.entity === entity ? "none" : "width 0.22s ease"}"></div>
           <div class="row-content">
             <span class="chip" style="background:${chipBg}" @pointerdown=${(e: Event) => e.stopPropagation()} @click=${(e: Event) => this.toggle(e, entity)}>
               <ha-icon .icon=${s?.attributes?.icon || "mdi:lightbulb"} style="color:${iconCol}"></ha-icon>
@@ -595,7 +635,7 @@ export class EmberRoomDetail extends LitElement implements LovelaceCard {
           @pointerup=${(e: PointerEvent) => this.rowUp(e)}
           @pointercancel=${() => (this.g = null)}
         >
-          <div class="fill" style="width:${avg}%;background:${anyOn ? "rgba(224,160,60,0.14)" : "rgba(127,140,150,0.08)"}"></div>
+          <div class="fill" style="width:${avg}%;background:${anyOn ? "rgba(224,160,60,0.14)" : "rgba(127,140,150,0.08)"};transition:${this.g?.kind === "master" ? "none" : "width 0.22s ease"}"></div>
           <div class="row-content">
             <span class="chip" style="background:${anyOn ? "var(--ember-accent-bg)" : "rgba(127,140,150,0.12)"}" @pointerdown=${(e: Event) => e.stopPropagation()} @click=${() => this.masterToggle()}>
               <ha-icon icon="mdi:lightbulb-group" style="color:${anyOn ? "var(--ember-accent)" : "var(--secondary-text-color)"}"></ha-icon>
@@ -626,7 +666,7 @@ export class EmberRoomDetail extends LitElement implements LovelaceCard {
     const a = this.st(entity)?.attributes ?? {};
     const mn = a.min_color_temp_kelvin ?? 2000;
     const mx = a.max_color_temp_kelvin ?? 6535;
-    const cur = a.color_temp_kelvin ?? 2700;
+    const cur = this.sPrev?.entity === entity && this.sPrev.kelvin != null ? this.sPrev.kelvin : a.color_temp_kelvin ?? 2700;
     const presets = WARM.filter((p) => p.k >= mn - 60 && p.k <= mx + 60);
     const grad = `linear-gradient(90deg, ${rgb(kelvinToRgb(mn))}, ${rgb(kelvinToRgb((mn + mx) / 2))}, ${rgb(kelvinToRgb(mx))})`;
     const frac = Math.max(0, Math.min(1, (cur - mn) / (mx - mn)));
@@ -642,7 +682,7 @@ export class EmberRoomDetail extends LitElement implements LovelaceCard {
       <div
         class="free"
         style="background:${grad}"
-        @pointerdown=${(e: PointerEvent) => this.slDown(e, (f) => this.setKelvin(entity, mn + f * (mx - mn)))}
+        @pointerdown=${(e: PointerEvent) => this.slDown(e, entity, "kelvin", mn, mx)}
         @pointermove=${(e: PointerEvent) => this.slMove(e)}
         @pointerup=${(e: PointerEvent) => this.slUp(e)}
         @pointercancel=${() => (this.sg = null)}
@@ -654,8 +694,10 @@ export class EmberRoomDetail extends LitElement implements LovelaceCard {
 
   private renderColour(entity: string): TemplateResult {
     const a = this.st(entity)?.attributes ?? {};
-    const hs = Array.isArray(a.hs_color) ? a.hs_color : [30, 90];
-    const [h, sat] = hs as [number, number];
+    const prev = this.sPrev?.entity === entity ? this.sPrev : null;
+    const hsA = (Array.isArray(a.hs_color) ? a.hs_color : [30, 90]) as [number, number];
+    const h = prev?.hue ?? hsA[0];
+    const sat = prev?.sat ?? hsA[1];
     const hueGrad = "linear-gradient(90deg,#ff5a5a,#ffe14d,#6dff6d,#4dffff,#6d6dff,#ff5aff,#ff5a5a)";
     const satGrad = `linear-gradient(90deg,#fff,${rgb(hsToRgb(h, 100))})`;
     return html`
@@ -670,7 +712,7 @@ export class EmberRoomDetail extends LitElement implements LovelaceCard {
       <div
         class="free"
         style="background:${hueGrad}"
-        @pointerdown=${(e: PointerEvent) => this.slDown(e, (f) => this.setHs(entity, f * 360, sat))}
+        @pointerdown=${(e: PointerEvent) => this.slDown(e, entity, "hue", 0, sat)}
         @pointermove=${(e: PointerEvent) => this.slMove(e)}
         @pointerup=${(e: PointerEvent) => this.slUp(e)}
         @pointercancel=${() => (this.sg = null)}
@@ -680,7 +722,7 @@ export class EmberRoomDetail extends LitElement implements LovelaceCard {
       <div
         class="free thin"
         style="background:${satGrad}"
-        @pointerdown=${(e: PointerEvent) => this.slDown(e, (f) => this.setHs(entity, h, f * 100))}
+        @pointerdown=${(e: PointerEvent) => this.slDown(e, entity, "sat", h, 0)}
         @pointermove=${(e: PointerEvent) => this.slMove(e)}
         @pointerup=${(e: PointerEvent) => this.slUp(e)}
         @pointercancel=${() => (this.sg = null)}
