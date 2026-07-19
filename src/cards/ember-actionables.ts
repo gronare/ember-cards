@@ -49,6 +49,7 @@ export interface EmberActionablesConfig extends LovelaceCardConfig {
     task?: string;
     error?: string;
     camera?: string;
+    camera_hash?: string;
     name?: string;
   };
 }
@@ -79,6 +80,7 @@ const D = {
   pTask: "sensor.wardrobe_a1_mini_task_name",
   pErr: "binary_sensor.wardrobe_a1_mini_print_error",
   pCam: "camera.wardrobe_a1_mini_camera",
+  pCamHash: "#a1-camera",
   pName: "A1 Mini",
 };
 const num = (v: string | undefined): number | null =>
@@ -408,6 +410,8 @@ export class EmberActionables extends LitElement implements LovelaceCard {
     const pStat = String(s(pStatE)?.state ?? "").toLowerCase();
     const pName = cfg.printer?.name ?? D.pName;
     const pCam = cfg.printer?.camera ?? D.pCam;
+    const pHash = cfg.printer?.camera_hash ?? D.pCamHash;
+    const openCam = () => (pHash ? this.navigate(pHash) : this.moreInfo(pCam));
     if (s(cfg.printer?.error ?? D.pErr)?.state === "on" || pStat === "failed") {
       out.push({
         tier: "alert",
@@ -416,7 +420,7 @@ export class EmberActionables extends LitElement implements LovelaceCard {
         value: "Print error — check printer",
         tint: "var(--ember-alert)",
         badge: { text: "Error" },
-        onTap: () => this.moreInfo(pCam),
+        onTap: openCam,
       });
     }
 
@@ -507,7 +511,7 @@ export class EmberActionables extends LitElement implements LovelaceCard {
         tint: paused ? "var(--ember-warn)" : "var(--ember-accent)",
         bar: prog ?? undefined,
         badge: prog != null ? { text: `${Math.round(prog)}%` } : undefined,
-        onTap: () => this.moreInfo(pCam),
+        onTap: openCam,
       });
     } else if (pStat === "finish") {
       out.push({
@@ -517,7 +521,7 @@ export class EmberActionables extends LitElement implements LovelaceCard {
         value: "Done — collect print",
         tint: "var(--ember-good)",
         badge: { text: "Done" },
-        onTap: () => this.moreInfo(pCam),
+        onTap: openCam,
       });
     }
 
