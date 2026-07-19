@@ -1,7 +1,7 @@
 {
   "name": "ember-cards",
   "version": "0.0.25",
-  "description": "Home Assistant custom Lovelace card library (Grönare apartment dashboard)",
+  "description": "Home Assistant custom Lovelace card library",
   "type": "module",
   "private": true,
   "scripts": {
