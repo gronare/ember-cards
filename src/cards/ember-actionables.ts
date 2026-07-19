@@ -39,6 +39,18 @@ export interface EmberActionablesConfig extends LovelaceCardConfig {
   air?: { co2?: string; pm25?: string; category?: string };
   health?: { zigbee?: string; coordinator_eth?: string; coordinator_net?: string; bt_proxy?: string; navigate?: string };
   lock?: { entity?: string; persons?: string[] };
+  printer?: {
+    status?: string;
+    progress?: string;
+    remaining?: string;
+    end?: string;
+    layer?: string;
+    total_layers?: string;
+    task?: string;
+    error?: string;
+    camera?: string;
+    name?: string;
+  };
 }
 
 const WASH_ON = ["run", "running", "wash", "washing", "rinse", "rinsing", "spin", "spinning", "drying", "steam"];
@@ -58,6 +70,16 @@ const D = {
   healthNav: "#wardrobe",
   lock: "lock.front_door_lock",
   persons: ["person.carl_green", "person.di"],
+  pStatus: "sensor.wardrobe_a1_mini_print_status",
+  pProg: "sensor.wardrobe_a1_mini_print_progress",
+  pRem: "sensor.wardrobe_a1_mini_remaining_time",
+  pEnd: "sensor.wardrobe_a1_mini_end_time",
+  pLayer: "sensor.wardrobe_a1_mini_current_layer",
+  pTotal: "sensor.wardrobe_a1_mini_total_layer_count",
+  pTask: "sensor.wardrobe_a1_mini_task_name",
+  pErr: "binary_sensor.wardrobe_a1_mini_print_error",
+  pCam: "camera.wardrobe_a1_mini_camera",
+  pName: "A1 Mini",
 };
 const num = (v: string | undefined): number | null =>
   v == null || v === "" || isNaN(+v) ? null : +v;
@@ -381,6 +403,23 @@ export class EmberActionables extends LitElement implements LovelaceCard {
       });
     }
 
+    // ── ALERT · 3D print error ──
+    const pStatE = cfg.printer?.status ?? D.pStatus;
+    const pStat = String(s(pStatE)?.state ?? "").toLowerCase();
+    const pName = cfg.printer?.name ?? D.pName;
+    const pCam = cfg.printer?.camera ?? D.pCam;
+    if (s(cfg.printer?.error ?? D.pErr)?.state === "on" || pStat === "failed") {
+      out.push({
+        tier: "alert",
+        icon: "mdi:printer-3d-nozzle-alert",
+        label: pName,
+        value: "Print error — check printer",
+        tint: "var(--ember-alert)",
+        badge: { text: "Error" },
+        onTap: () => this.moreInfo(pCam),
+      });
+    }
+
     // ── ACTIVE · timers (soonest first) ──
     Object.keys(hass.states)
       .filter((e) => e.startsWith("timer.") && s(e).state === "active")
@@ -438,6 +477,47 @@ export class EmberActionables extends LitElement implements LovelaceCard {
         tint: "var(--ember-teal)",
         bar: pct == null ? 60 : pct,
         badge: { text: "Running" },
+      });
+    }
+
+    // ── ACTIVE · 3D printer (printing / paused → done → collect) ──
+    if (["running", "prepare", "slicing", "pause"].includes(pStat)) {
+      const paused = pStat === "pause";
+      const prog = num(s(cfg.printer?.progress ?? D.pProg)?.state);
+      const endS = s(cfg.printer?.end ?? D.pEnd)?.state;
+      let remMin: number | null = null;
+      if (endS && !["unknown", "unavailable"].includes(endS))
+        remMin = Math.max(0, (Date.parse(endS) - Date.now()) / 60000);
+      else {
+        const rh = num(s(cfg.printer?.remaining ?? D.pRem)?.state);
+        if (rh != null) remMin = rh * 60;
+      }
+      const cur = num(s(cfg.printer?.layer ?? D.pLayer)?.state);
+      const tot = num(s(cfg.printer?.total_layers ?? D.pTotal)?.state);
+      const task = s(cfg.printer?.task ?? D.pTask)?.state;
+      const job = task && !["unknown", "unavailable"].includes(task) ? task : "";
+      const left =
+        remMin == null ? "…" : remMin >= 60 ? `${Math.floor(remMin / 60)}h ${Math.round(remMin % 60)}m` : `${Math.round(remMin)} min`;
+      const layers = cur != null && tot != null && tot > 0 ? ` · layer ${Math.round(cur)}/${Math.round(tot)}` : "";
+      out.push({
+        tier: "active",
+        icon: "mdi:printer-3d-nozzle",
+        label: pName + (paused ? " · Paused" : job ? " · " + job : ""),
+        value: `${paused ? "Paused" : "Printing"} — ${left} left${layers}`,
+        tint: paused ? "var(--ember-warn)" : "var(--ember-accent)",
+        bar: prog ?? undefined,
+        badge: prog != null ? { text: `${Math.round(prog)}%` } : undefined,
+        onTap: () => this.moreInfo(pCam),
+      });
+    } else if (pStat === "finish") {
+      out.push({
+        tier: "active",
+        icon: "mdi:printer-3d",
+        label: pName,
+        value: "Done — collect print",
+        tint: "var(--ember-good)",
+        badge: { text: "Done" },
+        onTap: () => this.moreInfo(pCam),
       });
     }
 
