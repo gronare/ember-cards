@@ -15,6 +15,7 @@ export interface EmberCameraDetailConfig extends LovelaceCardConfig {
   subtitle?: string;
   icon?: string;
   refresh?: number; // ms between frame reloads; default 1500
+  stream_switch?: string; // switch that powers the camera stream (start on demand, stop on close)
   stats?: CameraStat[];
 }
 
@@ -23,12 +24,19 @@ export interface EmberCameraDetailConfig extends LovelaceCardConfig {
 // view that stalls on the ~1 fps LAN feed and shows a broken image. This renders
 // the working camera_proxy still and reloads it on an interval, fitted to the
 // viewport so it never overflows the screen.
+//
+// When `stream_switch` is set, streaming is on-demand: the camera is off until you
+// press start (which powers the switch on), and closing the pop-up powers it back
+// off — but only if this pop-up was the one that turned it on (so a print you left
+// the camera on for isn't cut off).
 export class EmberCameraDetail extends LitElement implements LovelaceCard {
   @property({ attribute: false }) hass?: HomeAssistant;
   @state() private config?: EmberCameraDetailConfig;
   @state() private open = false;
+  @state() private streaming = false;
   @state() private tick = 0;
 
+  private weOn = false; // this pop-up powered the stream switch on
   private onHash = () => this.sync();
   private timer?: number;
 
@@ -103,7 +111,7 @@ export class EmberCameraDetail extends LitElement implements LovelaceCard {
       .close:hover {
         background: rgba(255, 255, 255, 0.1);
       }
-      .imgwrap {
+      .stage {
         margin-top: 16px;
         border-radius: 16px;
         overflow: hidden;
@@ -111,14 +119,14 @@ export class EmberCameraDetail extends LitElement implements LovelaceCard {
         display: flex;
         align-items: center;
         justify-content: center;
-        min-height: 120px;
+        aspect-ratio: 4 / 3;
+        max-height: 74vh;
         position: relative;
       }
       .feed {
         display: block;
         width: 100%;
-        height: auto;
-        max-height: 74vh;
+        height: 100%;
         object-fit: contain;
       }
       .msg {
@@ -128,6 +136,59 @@ export class EmberCameraDetail extends LitElement implements LovelaceCard {
         letter-spacing: 0.05em;
         text-transform: uppercase;
         color: var(--secondary-text-color);
+      }
+      .start {
+        border: none;
+        background: none;
+        color: var(--primary-text-color);
+        cursor: pointer;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 12px;
+      }
+      .start .ring {
+        width: 72px;
+        height: 72px;
+        border-radius: 999px;
+        display: grid;
+        place-items: center;
+        background: color-mix(in srgb, var(--ember-accent) 18%, transparent);
+        border: 1px solid color-mix(in srgb, var(--ember-accent) 45%, transparent);
+      }
+      .start .ring ha-icon {
+        --mdc-icon-size: 34px;
+        color: var(--ember-accent);
+      }
+      .start .cap {
+        font-family: var(--ember-mono);
+        font-size: 11px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--secondary-text-color);
+      }
+      .live {
+        position: absolute;
+        top: 10px;
+        left: 10px;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-family: var(--ember-mono);
+        font-size: 10px;
+        font-weight: 600;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: #fff;
+        background: rgba(0, 0, 0, 0.45);
+        border-radius: 999px;
+        padding: 3px 9px;
+      }
+      .live .d {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--ember-alert, #e5705c);
       }
       .stats {
         display: flex;
@@ -179,22 +240,63 @@ export class EmberCameraDetail extends LitElement implements LovelaceCard {
   disconnectedCallback(): void {
     super.disconnectedCallback();
     window.removeEventListener("hashchange", this.onHash);
-    this.stop();
+    this.teardown();
   }
 
   private sync(): void {
     const open = this.config != null && window.location.hash === this.config.hash;
     if (open === this.open) return;
     this.open = open;
-    if (open) this.start();
-    else this.stop();
+    if (open) this.onOpen();
+    else this.teardown();
   }
-  private start(): void {
-    this.stop();
+
+  private onOpen(): void {
+    const sw = this.config?.stream_switch;
+    if (!sw) {
+      // no switch to manage — always-available camera, poll immediately
+      this.streaming = true;
+      this.startPoll();
+      return;
+    }
+    // switch-gated camera: if it's already on, show it (but don't own it);
+    // otherwise wait for an explicit start press.
+    if (this.hass?.states[sw]?.state === "on") {
+      this.weOn = false;
+      this.streaming = true;
+      this.startPoll();
+    } else {
+      this.streaming = false;
+    }
+  }
+
+  private startStream(): void {
+    const sw = this.config?.stream_switch;
+    if (sw && this.hass?.states[sw]?.state !== "on") {
+      this.hass?.callService("switch", "turn_on", { entity_id: sw });
+      this.weOn = true;
+    }
+    this.streaming = true;
+    this.startPoll();
+  }
+
+  // stop polling; power the switch back off only if we turned it on
+  private teardown(): void {
+    this.stopPoll();
+    const sw = this.config?.stream_switch;
+    if (sw && this.weOn) {
+      this.hass?.callService("switch", "turn_off", { entity_id: sw });
+      this.weOn = false;
+    }
+    this.streaming = false;
+  }
+
+  private startPoll(): void {
+    this.stopPoll();
     const ms = Math.max(500, this.config?.refresh ?? 1500);
     this.timer = window.setInterval(() => (this.tick = this.tick + 1), ms);
   }
-  private stop(): void {
+  private stopPoll(): void {
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
   }
@@ -214,10 +316,24 @@ export class EmberCameraDetail extends LitElement implements LovelaceCard {
     return base + (base.includes("?") ? "&" : "?") + "_=" + this.tick;
   }
 
+  private renderStage(): TemplateResult {
+    if (!this.streaming) {
+      return html`<button class="start" @click=${() => this.startStream()}>
+        <span class="ring"><ha-icon icon="mdi:play"></ha-icon></span>
+        <span class="cap">Start camera</span>
+      </button>`;
+    }
+    const src = this.src();
+    if (!src) return html`<span class="msg">Starting…</span>`;
+    return html`
+      <span class="live"><span class="d"></span>Live</span>
+      <img class="feed" src=${src} alt="camera" />
+    `;
+  }
+
   render(): TemplateResult | typeof nothing {
     if (!this.config || !this.open) return nothing;
     const c = this.config;
-    const src = this.src();
     const stats = (c.stats ?? []).map((s) => {
       const st = this.hass?.states[s.entity];
       const v = st && !["unknown", "unavailable"].includes(st.state) ? st.state : "—";
@@ -236,10 +352,7 @@ export class EmberCameraDetail extends LitElement implements LovelaceCard {
             </div>
             <button class="close" @click=${() => this.close()}><ha-icon icon="mdi:close"></ha-icon></button>
           </div>
-          <div class="imgwrap">
-            <span class="msg">No image</span>
-            ${src ? html`<img class="feed" src=${src} alt="camera" />` : nothing}
-          </div>
+          <div class="stage">${this.renderStage()}</div>
           ${stats.length
             ? html`<div class="stats">
                 ${stats.map(
@@ -258,7 +371,7 @@ if (!customElements.get("ember-camera-detail")) {
   (window.customCards = window.customCards || []).push({
     type: "ember-camera-detail",
     name: "Ember Camera Detail",
-    description: "Hash pop-up: refreshing still-image camera view, fitted to screen",
+    description: "Hash pop-up: on-demand still-image camera view, fitted to screen",
     preview: false,
   });
 }

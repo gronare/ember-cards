@@ -1,6 +1,6 @@
 {
   "name": "ember-cards",
-  "version": "0.0.27",
+  "version": "0.0.28",
   "description": "Home Assistant custom Lovelace card library",
   "type": "module",
   "private": true,

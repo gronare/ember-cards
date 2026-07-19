@@ -50,6 +50,7 @@ export interface EmberActionablesConfig extends LovelaceCardConfig {
     error?: string;
     camera?: string;
     camera_hash?: string;
+    collected?: string; // input_boolean toggled by the Done badge to dismiss the finished row
     name?: string;
   };
 }
@@ -81,6 +82,7 @@ const D = {
   pErr: "binary_sensor.wardrobe_a1_mini_print_error",
   pCam: "camera.wardrobe_a1_mini_camera",
   pCamHash: "#a1-camera",
+  pCollected: "input_boolean.a1_print_collected",
   pName: "A1 Mini",
 };
 const num = (v: string | undefined): number | null =>
@@ -411,6 +413,7 @@ export class EmberActionables extends LitElement implements LovelaceCard {
     const pName = cfg.printer?.name ?? D.pName;
     const pCam = cfg.printer?.camera ?? D.pCam;
     const pHash = cfg.printer?.camera_hash ?? D.pCamHash;
+    const pColl = cfg.printer?.collected ?? D.pCollected;
     const openCam = () => (pHash ? this.navigate(pHash) : this.moreInfo(pCam));
     if (s(cfg.printer?.error ?? D.pErr)?.state === "on" || pStat === "failed") {
       out.push({
@@ -513,14 +516,14 @@ export class EmberActionables extends LitElement implements LovelaceCard {
         badge: prog != null ? { text: `${Math.round(prog)}%` } : undefined,
         onTap: openCam,
       });
-    } else if (pStat === "finish") {
+    } else if (pStat === "finish" && s(pColl)?.state !== "on") {
       out.push({
         tier: "active",
         icon: "mdi:printer-3d",
         label: pName,
         value: "Done — collect print",
         tint: "var(--ember-good)",
-        badge: { text: "Done" },
+        badge: { text: "Done", onClick: () => this.call("input_boolean", "turn_on", pColl) },
         onTap: openCam,
       });
     }
